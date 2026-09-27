@@ -1118,7 +1118,7 @@ window.FieldVisual = FieldVisual;
 const LAYER_DEFS = [
   { id: 'bowls', name: 'Bowls', kind: 'layer', level: .8, note: 'Singing bowls, struck every few breaths' },
   { id: 'choir', name: 'Choir', kind: 'layer', level: .55, note: 'Overtone voices slowly shaping vowels' },
-  { id: 'heart', name: 'Heartbeat', kind: 'layer', level: .7, note: 'A soft low heartbeat near 60 bpm, locked to the pulse' },
+  { id: 'heart', name: 'Heartbeat', kind: 'layer', level: .7, note: 'A soft low heartbeat that follows the pulse rate' },
   { id: 'shimmer', name: 'Shimmer', kind: 'layer', level: .6, note: 'High sparkles from the upper harmonics' },
   { id: 'handpan', name: 'Handpan', kind: 'loop', level: .8, note: '16-step handpan groove tuned to the root' },
   { id: 'arp', name: 'Arp', kind: 'loop', level: .55, note: 'Overtone arpeggio rippling on every pulse' },
@@ -1330,9 +1330,14 @@ class LayerRack {
         break;
       }
       case 'heart': {
-        const n = Math.max(1, Math.round(1 / d)); // steps per ~1 s
-        if (s % n === 0) {
-          this._thump(S, t, 1); this._thump(S, t + Math.min(.28, d * n * .3), .6);
+        // Heartbeat follows the pulse: it lands on every Nth pulse crest, and its tempo rises and falls with the
+        // pulse rate (delta ~48 bpm, theta ~64, alpha ~80), so Descent slows the heart as the pulse settles.
+        const hz = 1 / d, bpm = clamp(40 + hz * 4, 44, 84), n = Math.max(1, Math.round(hz * 60 / bpm));
+        if (this._heartN !== n) { this._heartN = n; this._heartNext = s; }
+        if (s >= (this._heartNext ?? s)) {
+          this._heartNext = s + n;
+          const beat = d * n;
+          this._thump(S, t, 1); this._thump(S, t + Math.min(.3, beat * .32), .6);
           if (this.onEvent) { const ms = Math.max(0, (t - this.c.currentTime) * 1000); setTimeout(() => this.onEvent({ type: 'heart' }), ms); }
         }
         break;
