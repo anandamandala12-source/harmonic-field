@@ -416,8 +416,9 @@ window.addEventListener('error',function(e){var n=document.getElementById('hf-er
     </div>
     <div class="section sliders">
       <label class="slider"><span class="label">Morph</span><input id="morph" type="range" min="1" max="60" value="12"><span class="val" id="morph-v">12s</span></label>
-      <label class="slider mt"><span class="label">Drift</span><input id="drift" type="range" min="0" max="100" value="100"><span class="val" id="drift-v">100</span></label>
-      <p class="hint">Drift lets each overtone slowly wander in level and adds gentle beating from paired, slightly detuned tones. 0 holds the drone perfectly still.</p>
+      <label class="slider mt"><span class="label">Wander</span><input id="wander" type="range" min="0" max="100" value="100"><span class="val" id="wander-v">100</span></label>
+      <label class="slider mt"><span class="label">Beating</span><input id="beatamt" type="range" min="0" max="100" value="100"><span class="val" id="beatamt-v">100</span></label>
+      <p class="hint">Wander lets each overtone slowly rise and fall in level. Beating pairs overtones 2–8 with a slightly detuned twin: barely detuned down low, wider up high, and the amount keeps shifting. The fundamental is never detuned or moved. Set both to 0 for a perfectly still drone.</p>
     </div>
     <div class="section">
       <div class="label-row"><span class="label">Partials 1–16</span><span class="label dim" id="rd-partials"></span></div>
@@ -604,7 +605,7 @@ const lerp = (a, b, t) => a + (b - a) * t;
 const MAP = {
   pulseRate: x => 0.5 * Math.pow(28, x),          // 0.5 .. 14 Hz (log)
   pulseShape: x => 1 + 14 * x * x,                // waveshaper drive: sine -> near-square
-  beatLevel: x => 0.22 * x * x,
+  beatLevel: x => 0.3 * x * x,
   cutoff: x => 40 * Math.pow(400, x),             // 40 Hz .. 16 kHz
   resonance: x => 0.5 * Math.pow(36, x),          // Q .5 .. 18
   motion: x => 2400 * Math.pow(x, 1.5),           // LFO depth in cents (up to 2 octaves)
@@ -721,8 +722,13 @@ class HarmonicEngine {
     this.comp.threshold.value = -16; this.comp.ratio.value = 3; this.comp.knee.value = 12;
     this.comp.attack.value = .02; this.comp.release.value = .4;
     this.limiter = c.createDynamicsCompressor();
-    this.limiter.threshold.value = -3; this.limiter.ratio.value = 20; this.limiter.knee.value = 0;
-    this.limiter.attack.value = .003; this.limiter.release.value = .15;
+    this.limiter.threshold.value = -8; this.limiter.ratio.value = 20; this.limiter.knee.value = 2;
+    this.limiter.attack.value = .001; this.limiter.release.value = .2;
+    this.preTrim = c.createGain(); this.preTrim.gain.value = .72;   // headroom before the dynamics
+    this.soft = c.createWaveShaper(); this.soft.oversample = '4x'; this.soft.curve = (() => {
+      const n = 2048, k = new Float32Array(n);
+      for (let i = 0; i < n; i++) { const x = i / (n - 1) * 2 - 1, a = Math.abs(x); k[i] = a < .6 ? x : Math.sign(x) * (.6 + .38 * Math.tanh((a - .6) / .38)); }
+      return k; })();
     this.analyser = c.createAnalyser(); this.analyser.fftSize = 2048; this.analyser.smoothingTimeConstant = .82;
     this.recDest = c.createMediaStreamDestination();
     /* Sculpt filter on the whole field: low cut -> (biquad | vowel formants) with slow or pulse-synced motion */
@@ -762,7 +768,7 @@ class HarmonicEngine {
     this.lowCutF.connect(this.phIn);
     this.phAps.reduce((prev, ap) => { prev.connect(ap); return ap; }, this.phIn).connect(this.phG);
     this.phG.connect(this.fOut);
-    this.fOut.connect(this.comp);
+    this.fOut.connect(this.preTrim); this.preTrim.connect(this.comp);
     // Motion LFO: either sweeps the filter cutoff (Sweep) or the phaser stages (Phaser)
     this.motionMode = 'sweep';
     this.fLfo = c.createOscillator(); this.fLfo.frequency.value = .05;
@@ -774,8 +780,8 @@ class HarmonicEngine {
     this.fLfo.start();
 
     this.comp.connect(this.limiter);
-    this.limiter.connect(this.analyser); this.analyser.connect(c.destination);
-    this.limiter.connect(this.recDest);
+    this.limiter.connect(this.soft); this.soft.connect(this.analyser); this.analyser.connect(c.destination);
+    this.soft.connect(this.recDest);
 
     // Reverb (generated long hall IR)
     this.reverb = c.createConvolver();
@@ -811,7 +817,10 @@ class HarmonicEngine {
     const split = c.createChannelSplitter(2), merge = c.createChannelMerger(2);
     this.vcaL = c.createGain(); this.vcaR = c.createGain();
     this.amtL = c.createGain(); this.amtR = c.createGain(); this.amtL.gain.value = 0; this.amtR.gain.value = 0;
-    this.pShape.connect(this.amtL); this.amtL.connect(this.vcaL.gain);
+    // smooth the pulse control signal so steep shapes don't click
+    this.pSmooth = c.createBiquadFilter(); this.pSmooth.type = 'lowpass'; this.pSmooth.frequency.value = 45; this.pSmooth.Q.value = .5;
+    this.pShape.connect(this.pSmooth);
+    this.pSmooth.connect(this.amtL); this.amtL.connect(this.vcaL.gain);
     this.pDelay.connect(this.amtR); this.amtR.connect(this.vcaR.gain);
     this.droneFilter.connect(split);
     split.connect(this.vcaL, 0); split.connect(this.vcaR, 1);
@@ -832,7 +841,10 @@ class HarmonicEngine {
     this.binL.start(); this.binR.start();
     this.isoO = c.createOscillator();
     this.isoVCA = c.createGain(); this.isoVCA.gain.value = .5;
-    const isoAmt = c.createGain(); isoAmt.gain.value = .5; this.pShape.connect(isoAmt); isoAmt.connect(this.isoVCA.gain);
+    // isochronic tone gets its own clear on/off gate at the pulse rate, softened just enough not to click
+    this.isoShape = c.createWaveShaper(); this.isoShape.curve = this._shapeCurve(7); this.pLfo.connect(this.isoShape);
+    const isoSm = c.createBiquadFilter(); isoSm.type = 'lowpass'; isoSm.frequency.value = 70; isoSm.Q.value = .5; this.isoShape.connect(isoSm);
+    const isoAmt = c.createGain(); isoAmt.gain.value = .5; isoSm.connect(isoAmt); isoAmt.connect(this.isoVCA.gain);
     this.isoG = c.createGain(); this.isoG.gain.value = 0;
     this.isoO.connect(this.isoVCA); this.isoVCA.connect(this.isoG); this.isoG.connect(this.beatBus);
     this.isoO.start();
@@ -848,7 +860,7 @@ class HarmonicEngine {
       const o = c.createOscillator(); o.type = 'sine'; o.frequency.value = this.root * h;
       o.connect(g); o.start();
       let twin = null, twinG = null;
-      if (h <= 8) {
+      if (h >= 2 && h <= 8) {
         twin = c.createOscillator(); twin.type = 'sine'; twin.frequency.value = this.root * h + .3;
         twinG = c.createGain(); twinG.gain.value = .5; twin.connect(twinG); twinG.connect(g); twin.start();
       }
@@ -974,13 +986,14 @@ class HarmonicEngine {
 
     // partial amplitudes
     const tilt = lerp(2.3, .65, e.brightness);
-    const drift = clamp(this.drift ?? 1);   // Drift: each overtone wanders in level, paired tones beat; 0 = perfectly still
-    const walkSpeed = (.05 + e.motion * .6) * drift;
+    // Wander: each overtone (never the fundamental) drifts in level. Beating: detuned twins on overtones 2-8.
+    const wander = clamp(this.wander ?? 1), beatAmt = clamp(this.beatAmt ?? 1);
+    const walkSpeed = (.05 + e.motion * .6) * wander;
     let sumSq = 0; const amps = [];
     for (let i = 0; i < H_COUNT; i++) {
       const h = i + 1;
       this.walk[i] = clamp(this.walk[i] + (Math.random() - .5) * walkSpeed * dt * 2);
-      const shimmer = lerp(1, .35 + .65 * this.walk[i], clamp(.3 + e.motion) * drift);
+      const shimmer = h === 1 ? 1 : lerp(1, .35 + .65 * this.walk[i], clamp(.3 + e.motion) * wander);
       let amp = Math.pow(h, -tilt) * shimmer;
       if (h % 2 === 0 && h > 1) amp *= (1 - e.hollow * .85);
       if (h === 1) amp *= lerp(.35, 1.4, e.ground);
@@ -991,15 +1004,23 @@ class HarmonicEngine {
     }
     const norm = .32 / Math.sqrt(sumSq + 1e-6);
     const swellGain = 1 + e.swell * .45;
+    const glide = this._rootGlide ? this._rootGlide.tc / 1000 : .5;
     for (let i = 0; i < H_COUNT; i++) {
-      const P = this.partials[i], v = amps[i] * norm * swellGain;
+      const P = this.partials[i];
+      let tl = 0;
+      if (P.twin) {
+        // detune shifts on its own for every twin (slow random walk), wider up high, narrower down low
+        P.bw = clamp((P.bw ?? Math.random()) + (Math.random() - .5) * dt * .09);
+        const span = .05 + .11 * Math.pow(P.h - 1, 1.15);           // Hz: overtone 2 ~ .16, overtone 8 ~ 1.1
+        const beatHz = Math.max(.01, e.beating * span * lerp(.35, 1.65, P.bw) * 1.4);
+        tl = (.2 + e.beating * .6) * beatAmt;
+        P.twin.frequency.setTargetAtTime(this.targetRoot * P.h + beatHz, now, glide);
+        P.twinG.gain.setTargetAtTime(tl, now, .5);
+      }
+      // when a twin lines up with its overtone the two add; scale so the peak stays the same
+      const v = amps[i] * norm * swellGain * 1.25 / (1 + tl);
       this.partialAmps[i] = amps[i] * norm;
       P.g.gain.setTargetAtTime(v, now, T * 3);
-      if (P.twin) {
-        const beatHz = e.beating * (.25 + P.h * .12) * 1.4;
-        P.twin.frequency.setTargetAtTime(this.targetRoot * P.h + beatHz, now, this._rootGlide ? this._rootGlide.tc / 1000 : .5);
-        P.twinG.gain.setTargetAtTime((.2 + e.beating * .6) * drift, now, .5);
-      }
     }
 
     // tone + space
@@ -2094,8 +2115,10 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
   $('mfree').oninput = e => { E.motionFree = e.target.value / 100; save(); };
   function setMotionMode(m) { E.motionMode = m === 'phaser' ? 'phaser' : 'sweep'; document.querySelectorAll('[data-mm]').forEach(b => b.setAttribute('aria-pressed', b.dataset.mm === E.motionMode)); renderKnob(6); save(); }
   document.querySelectorAll('[data-mm]').forEach(b => b.onclick = () => setMotionMode(b.dataset.mm));
-  function setDrift(v) { E.drift = clamp(v); $('drift').value = Math.round(E.drift * 100); $('drift-v').textContent = Math.round(E.drift * 100); save(); }
-  $('drift').oninput = e => setDrift(e.target.value / 100);
+  function setWander(v) { E.wander = clamp(v); $('wander').value = Math.round(E.wander * 100); $('wander-v').textContent = Math.round(E.wander * 100); save(); }
+  function setBeatAmt(v) { E.beatAmt = clamp(v); $('beatamt').value = Math.round(E.beatAmt * 100); $('beatamt-v').textContent = Math.round(E.beatAmt * 100); save(); }
+  $('wander').oninput = e => setWander(e.target.value / 100);
+  $('beatamt').oninput = e => setBeatAmt(e.target.value / 100);
   $('lowcut').oninput = e => { E.lowCut = +e.target.value; $('lowcut-v').textContent = e.target.value + ' Hz'; save(); };
 
   /* ================= Drift ================= */
@@ -2368,7 +2391,7 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
   /* ================= Persist sound settings ================= */
   function save() {
     store.set('hf-sound-v2', { ctl: E.ctl, beatMode: E.beatMode, lockRoot: E.lockRoot, spread: E.spread, carrierH: E.carrierH,
-      filterType: E.filterType, motionMode: E.motionMode, drift: E.drift ?? 1, lowCut: E.lowCut, motionSync: E.motionSync, motionDiv: E.motionDiv, motionFree: E.motionFree, descentMinutes: E.descentMinutes });
+      filterType: E.filterType, motionMode: E.motionMode, wander: E.wander ?? 1, beatAmt: E.beatAmt ?? 1, lowCut: E.lowCut, motionSync: E.motionSync, motionDiv: E.motionDiv, motionFree: E.motionFree, descentMinutes: E.descentMinutes });
   }
   const saved = store.get('hf-sound-v2', null);
   if (saved && typeof saved === 'object') {
@@ -2379,7 +2402,8 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
     if (typeof saved.lockRoot === 'boolean') E.lockRoot = saved.lockRoot;
     if (typeof saved.motionSync === 'boolean') E.motionSync = saved.motionSync;
     if (saved.motionMode === 'phaser' || saved.motionMode === 'sweep') E.motionMode = saved.motionMode;
-    if (typeof saved.drift === 'number') E.drift = clamp(saved.drift);
+    if (typeof saved.wander === 'number') E.wander = clamp(saved.wander);
+    if (typeof saved.beatAmt === 'number') E.beatAmt = clamp(saved.beatAmt);
     for (const [k, a, b] of [['spread', 0, 1], ['carrierH', 2, 8], ['lowCut', 20, 200], ['motionDiv', 4, 32], ['motionFree', 0, 1], ['descentMinutes', 5, 30]]) { const v = num(saved[k], a, b); if (v != null) E[k] = v; }
     E.volume = E.ctl.level;
   }
@@ -2492,7 +2516,7 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
   };
 
   // initial UI state
-  setBeat(E.beatMode); setFilterType(E.filterType); setMotionMode(E.motionMode || 'sweep'); setDrift(E.drift ?? 1); setDiv(E.motionSync ? E.motionDiv : 'free');
+  setBeat(E.beatMode); setFilterType(E.filterType); setMotionMode(E.motionMode || 'sweep'); setWander(E.wander ?? 1); setBeatAmt(E.beatAmt ?? 1); setDiv(E.motionSync ? E.motionDiv : 'free');
   $('lock').setAttribute('aria-pressed', E.lockRoot);
   $('spread').value = Math.round(E.spread * 100); $('spread-v').textContent = Math.round(E.spread * 180) + '°';
   $('lowcut').value = E.lowCut; $('lowcut-v').textContent = E.lowCut + ' Hz';
