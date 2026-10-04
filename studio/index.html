@@ -451,6 +451,9 @@ window.addEventListener('error',function(e){var n=document.getElementById('hf-er
         <button data-beat="off">Off</button><button data-beat="binaural">Binaural</button><button data-beat="isochronic">Isochronic</button>
       </div>
       <p class="hint" id="beat-hint"></p>
+      <div class="row-between mt"><button class="tog wide" id="tlink" aria-pressed="true"><span class="led"></span>Link tone to drone pulse</button><span class="val" id="trate-rd"></span></div>
+      <label class="slider mt" id="trate-row" hidden><span class="label">Tone rate</span><input id="trate" type="range" min="0" max="1000" value="500"><span class="val" id="trate-v"></span></label>
+      <p class="hint">Unlinked, the tone pulses at its own rate while the Rate knob keeps the drone. Lock to root applies to both.</p>
       <div class="label-row mt"><span class="label">Tone pitch</span><span class="label dim">harmonic of the root</span></div>
       <div class="chips" id="carriers"></div>
     </div>
@@ -505,6 +508,10 @@ window.addEventListener('error',function(e){var n=document.getElementById('hf-er
 
   <!-- LAYERS -->
   <div class="pane" data-pane="layers" hidden>
+    <div class="section">
+      <label class="slider"><span class="label">Heart duck</span><input id="duck" type="range" min="0" max="100" value="35"><span class="val" id="duck-v">35</span></label>
+      <p class="hint">Sidechain: each heartbeat briefly ducks the drone, so the field breathes with the heart. Only works while Heartbeat is on.</p>
+    </div>
     <div class="section">
       <div class="label-row"><span class="label">Layers · pad row 2</span><span class="label dim">fade in right away</span></div>
       <div class="lrows" id="layers-a"></div>
@@ -596,6 +603,15 @@ const SCENES = [
   { id: 'void', name: 'Void', key: '5', note: 'Sub and space, almost nothing',
     p: { brightness: .08, hollow: .50, beating: .15, density: .03, timbre: .90, depth: 1.0, air: .32, warmth: .14, motion: .10, ground: 1.0, exotic: .3 },
     v: { n: 1, m: 4, a: [.3, .32, .85], b: [.12, .1, .4], c: [.6, .55, 1.0] } },
+  { id: 'heart', name: 'Heart Glow', key: '6', note: 'Warm, tender, softly rounded',
+    p: { brightness: .34, hollow: .18, beating: .38, density: .10, timbre: .60, depth: .70, air: .12, warmth: .56, motion: .28, ground: .92, exotic: .05 },
+    v: { n: 2, m: 5, a: [1.0, .48, .52], b: [.7, .2, .32], c: [1.0, .82, .74] } },
+  { id: 'temple', name: 'Temple', key: '7', note: 'Bowls and stone, grounded and rich',
+    p: { brightness: .30, hollow: .34, beating: .46, density: .16, timbre: .96, depth: .86, air: .10, warmth: .40, motion: .24, ground: 1.0, exotic: .22 },
+    v: { n: 3, m: 4, a: [.95, .62, .26], b: [.5, .18, .1], c: [1.0, .78, .45] } },
+  { id: 'moon', name: 'Moonrise', key: '8', note: 'Cool, spacious, silvery',
+    p: { brightness: .52, hollow: .56, beating: .30, density: .12, timbre: .70, depth: .95, air: .20, warmth: .62, motion: .34, ground: .85, exotic: .48 },
+    v: { n: 4, m: 6, a: [.62, .72, .95], b: [.2, .26, .5], c: [.88, .92, 1.0] } },
 ];
 
 const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
@@ -674,6 +690,12 @@ class HarmonicEngine {
       hz = D.from * Math.pow(hz / D.from, ease); // geometric glide (even in octaves)
       if (k >= 1) this.descent = null;
     }
+    if (this.lockRoot) { const n = Math.max(1, Math.round(this.root / hz)); hz = this.root / n; }
+    return hz;
+  }
+  toneHz() {
+    if (this.toneLink !== false) return this.pulseHz();
+    let hz = MAP.pulseRate(this.toneRate ?? this.ctl.pulseRate);
     if (this.lockRoot) { const n = Math.max(1, Math.round(this.root / hz)); hz = this.root / n; }
     return hz;
   }
@@ -826,13 +848,17 @@ class HarmonicEngine {
     split.connect(this.vcaL, 0); split.connect(this.vcaR, 1);
     this.vcaL.connect(merge, 0, 0); this.vcaR.connect(merge, 0, 1);
     this.pulseOut = merge;
-    this.pulseOut.connect(this.droneDry); this.droneDry.connect(this.master);
-    this.pulseOut.connect(this.droneWet); this.droneWet.connect(this.reverbSend);
+    this.duckG = c.createGain(); this.duckG.gain.value = 1;   // sidechain: the heartbeat ducks the drone
+    this.pulseOut.connect(this.duckG);
+    this.duckG.connect(this.droneDry); this.droneDry.connect(this.master);
+    this.duckG.connect(this.droneWet); this.droneWet.connect(this.reverbSend);
 
     /* Entrainment tone: binaural pair (hard L/R) or isochronic gated tone, pitched on a harmonic of the root.
        Goes straight to the compressor so the sculpt filter never swallows it. */
     this.beatBus = c.createGain(); this.beatBus.gain.value = 0;
-    this.beatBus.connect(this.comp);
+    this.toneLP = c.createBiquadFilter(); this.toneLP.type = 'lowpass'; this.toneLP.Q.value = 1.4; this.toneLP.frequency.value = 900;
+    this.beatBus.connect(this.toneLP); this.toneLP.connect(this.comp);   // tone has its own filter, outside the sculpt filter
+    this.toneLfoAmt = c.createGain(); this.toneLfoAmt.gain.value = 0; this.fLfo.connect(this.toneLfoAmt); this.toneLfoAmt.connect(this.toneLP.detune);
     const bSend = c.createGain(); bSend.gain.value = .12; this.beatBus.connect(bSend); bSend.connect(this.reverbSend);
     this.binL = c.createOscillator(); this.binR = c.createOscillator();
     const bMerge = c.createChannelMerger(2);
@@ -840,9 +866,11 @@ class HarmonicEngine {
     this.binG = c.createGain(); this.binG.gain.value = 0; bMerge.connect(this.binG); this.binG.connect(this.beatBus);
     this.binL.start(); this.binR.start();
     this.isoO = c.createOscillator();
+    { const re = new Float32Array([0, 0, 0, 0, 0]), im = new Float32Array([0, 1, .32, .16, .07]); this.isoO.setPeriodicWave(c.createPeriodicWave(re, im)); }
+    this.tLfo = c.createOscillator(); this.tLfo.frequency.value = 6; this.tLfo.start();   // tone pulse rate (own LFO)
     this.isoVCA = c.createGain(); this.isoVCA.gain.value = .5;
     // isochronic tone gets its own clear on/off gate at the pulse rate, softened just enough not to click
-    this.isoShape = c.createWaveShaper(); this.isoShape.curve = this._shapeCurve(7); this.pLfo.connect(this.isoShape);
+    this.isoShape = c.createWaveShaper(); this.isoShape.curve = this._shapeCurve(7); this.tLfo.connect(this.isoShape);
     const isoSm = c.createBiquadFilter(); isoSm.type = 'lowpass'; isoSm.frequency.value = 70; isoSm.Q.value = .5; this.isoShape.connect(isoSm);
     this.isoAmt = c.createGain(); this.isoAmt.gain.value = .5; isoSm.connect(this.isoAmt); this.isoAmt.connect(this.isoVCA.gain);
     this.isoG = c.createGain(); this.isoG.gain.value = 0;
@@ -888,6 +916,21 @@ class HarmonicEngine {
     this.bellMix.connect(this.bellDry); this.bellDry.connect(this.master);
     this.bellMix.connect(this.bellWet); this.bellWet.connect(this.reverbSend);
     this.bellMix.connect(this.delayIn);
+    // Long stereo echo for strikes and bowls: ping-pong between ~1.9 s and ~2.9 s, darkening as it repeats
+    this.echoIn = c.createGain(); this.echoIn.gain.value = .55;
+    this.echoRack = c.createGain(); this.echoRack.gain.value = this.textureMix ?? .6; this.echoRack.connect(this.echoIn);
+    { const hp = c.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 180;
+      const dL = c.createDelay(6), dR = c.createDelay(6); dL.delayTime.value = 1.9; dR.delayTime.value = 2.87;
+      const lpL = c.createBiquadFilter(), lpR = c.createBiquadFilter(); lpL.type = lpR.type = 'lowpass'; lpL.frequency.value = lpR.frequency.value = 2400;
+      const fbL = c.createGain(), fbR = c.createGain(); fbL.gain.value = fbR.gain.value = .62;
+      const mg = c.createChannelMerger(2); this.echoOut = c.createGain(); this.echoOut.gain.value = .7;
+      this.echoIn.connect(hp); hp.connect(dL);
+      dL.connect(lpL); lpL.connect(fbL); fbL.connect(dR);
+      dR.connect(lpR); lpR.connect(fbR); fbR.connect(dL);
+      dL.connect(mg, 0, 0); dR.connect(mg, 0, 1); mg.connect(this.echoOut);
+      this.echoOut.connect(this.master);
+      const es = c.createGain(); es.gain.value = .35; this.echoOut.connect(es); es.connect(this.reverbSend); }
+    this.bellMix.connect(this.echoIn);
 
     this.master.gain.setTargetAtTime(this.volume * this.sleepMul, c.currentTime, 1.5);
     if (this.onStarted) this.onStarted();
@@ -918,7 +961,12 @@ class HarmonicEngine {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
     if (this.bellMix) this.bellMix.gain.setTargetAtTime(this.textureMix, t, .3);
+    if (this.echoRack) this.echoRack.gain.setTargetAtTime(this.textureMix, t, .3);
     if (this.rackBus) this.rackBus.gain.setTargetAtTime(this.textureMix, t, .3);
+  }
+  duck(t, vel = 1) {
+    const amt = clamp((this.sidechain ?? .35) * vel); if (!this.duckG || amt < .005) return;
+    const g = this.duckG.gain; g.setTargetAtTime(1 - amt, t, .012); g.setTargetAtTime(1, t + .07, .28);
   }
   setVolume(v) { this.volume = v; if (this.ctx) this.master.gain.setTargetAtTime(v * this.sleepMul, this.ctx.currentTime, .2); }
   setRoot(hz) { this.targetRoot = clamp(hz, 20, 400); this._glideRoot(); }
@@ -1070,8 +1118,10 @@ class HarmonicEngine {
     }
     this.pDelay.delayTime.setTargetAtTime(clamp(this.spread * .5 / hz, 0, 1.9), now, .3);
     // entrainment tone
-    const fc = this.carrierHz(), glide = this._rootGlide ? this._rootGlide.tc / 1000 : .2;
-    this.binL.frequency.setTargetAtTime(fc - hz / 2, now, glide); this.binR.frequency.setTargetAtTime(fc + hz / 2, now, glide);
+    const fc = this.carrierHz(), glide = this._rootGlide ? this._rootGlide.tc / 1000 : .2, thz = this.toneHz();
+    this.tLfo.frequency.setTargetAtTime(thz, now, .25);
+    this.toneLP.frequency.setTargetAtTime(Math.min(12000, fc * 2.4), now, .3);
+    this.binL.frequency.setTargetAtTime(fc - thz / 2, now, glide); this.binR.frequency.setTargetAtTime(fc + thz / 2, now, glide);
     this.isoO.frequency.setTargetAtTime(fc, now, glide);
     const lvl = this.pulseOn ? MAP.beatLevel(C.beatLevel) : 0;
     this.binG.gain.setTargetAtTime(this.beatMode === 'binaural' ? lvl : 0, now, .2);
@@ -1114,6 +1164,7 @@ class HarmonicEngine {
     this.fLfoAmt.gain.setTargetAtTime(ph ? 0 : MAP.motion(m), now, .2);                 // filter sweep depth (cents)
     this.phLfoAmt.gain.setTargetAtTime(ph && m > .005 ? 900 + 1500 * m : 0, now, .2);   // phaser sweep depth (cents)
     this.phG.gain.setTargetAtTime(ph ? .55 * Math.sqrt(m) : 0, now, .2);               // phaser amount, 0 = none
+    this.toneLfoAmt.gain.setTargetAtTime(MAP.motion(m), now, .2);                       // Motion also sweeps the tone's own filter
   }
   vowelName() { const x = this.ctl.cutoff * (VOWELS.length - 1); return VOWELS[Math.round(x)].v; }
 
@@ -1134,11 +1185,11 @@ class HarmonicEngine {
     while (f < 190) { f *= 2; oct++; } while (f > 1500) { f /= 2; oct--; }
     if (Math.random() < .25 && f * 2 < 2000) { f *= 2; oct++; }
     const bowl = Math.random() < e.timbre;
-    const ratios = bowl ? [1, 2.71, 5.15, 8.1] : [1, 2, 3, 4.1];
+    const ratios = bowl ? [1, 2, 2.71, 3, 5.15] : [1, 2, 3, 4.1];
     // brightness 0 (low) .. 1 (high): brighter strikes play quieter, with softer overtones
     const bright = clamp(Math.log2(f / 190) / Math.log2(2000 / 190));
     const tame = lerp(1, .45, bright);
-    const levels = (bowl ? [1, .45, .22, .1] : [1, .38, .14, .05]).map((l, i) => i ? l * tame * tame : l);
+    const levels = (bowl ? [1, .3, .4, .16, .18] : [1, .38, .14, .05]).map((l, i) => i ? l * tame * tame : l);
     vel *= (this.strikeLevel ?? .5) * lerp(1, .45, bright);
     const decay = (bowl ? 5 : 2.4) * lerp(.8, 1.6, e.depth);
     const attack = bowl ? .06 : .004;
@@ -1655,13 +1706,15 @@ class LayerRack {
     const bright = clamp(Math.log2(f / 140) / Math.log2(620 / 140));
     vel *= (this.E.strikeLevel ?? .5) * 1.2 * lerp(1, .5, bright);
     const out = this._env(t, .16 * vel, .09, 11, this._panner(Math.random() * 1.4 - .7, S.g)), stop = t + 16;
+    if (this.E.echoRack) out.connect(this.E.echoRack);
     const tame = lerp(1, .5, bright);
-    [[1, 1], [2.71, .4], [5.15, .18]].forEach(([r, l], i) => {
+    [[1, 1], [2, .28], [2.71, .38], [3, .14], [5.15, .16]].forEach(([r, l], i) => {
       const g = this.c.createGain(); g.gain.value = i ? l * tame * tame : l; g.connect(out);
       this._osc('sine', f * r, t, stop, g); { const w = this.c.createGain(); w.gain.value = .3; w.connect(g); this._osc('sine', f * r + 1.1 + i * 1.7, t, stop, w); }
     });
   }
   _thump(S, t, vel) {
+    if (this.E.duck) this.E.duck(t, vel);
     const c = this.c, f0 = this._fold(this.E.root, 38, 70);
     const g = this._env(t, .55 * vel, .006, 1.1, S.g);
     const o = c.createOscillator(); o.type = 'sine';
@@ -1854,7 +1907,7 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
   ];
   // second functions (while Shift is held)
   const SHIFT = {
-    0: { name: SCENES[4].name, on: () => goScene(4), sub: () => 'scene' },
+    0: { name: 'Stop all', on: clearAll, sub: () => 'layers' },
     1: { name: 'Drift', on: () => toggleDrift(), sub: () => drift ? 'on' : 'off' },
     2: { name: '−5th', on: () => shiftRoot(2 / 3), sub: () => E.targetRoot.toFixed(1) },
     3: { name: '+5th', on: () => shiftRoot(1.5), sub: () => E.targetRoot.toFixed(1) },
@@ -1862,7 +1915,8 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
     13: { name: 'Pulse', on: () => togglePulse(), sub: () => E.pulseOn ? 'on' : 'off' },
     14: { name: 'Descent', on: () => toggleDescent(), sub: () => E.descent ? Math.round(E.descentProgress() * 100) + '%' : 'α→θ' },
   };
-  for (let i = 4; i < 12; i++) SHIFT[i] = { name: 'Stop all', on: clearAll, sub: () => 'layers' };
+  for (let i = 4; i < 8; i++) { const k = i; SHIFT[i] = { name: SCENES[k].name, on: () => goScene(k), sub: () => 'scene', scene: k }; }
+  for (let i = 8; i < 12; i++) SHIFT[i] = { name: 'Stop all', on: clearAll, sub: () => 'layers' };
   const KEYHINT = ['1', '2', '3', '4', 'Q', 'W', 'E', 'R', 'A', 'S', 'D', 'F', 'Z', 'X', 'C', '⇧'];
   const SHIFT_PAD = 15;
   const padEls = [];
@@ -2123,6 +2177,13 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
   $('mfree').oninput = e => { E.motionFree = e.target.value / 100; save(); };
   function setMotionMode(m) { E.motionMode = m === 'phaser' ? 'phaser' : 'sweep'; document.querySelectorAll('[data-mm]').forEach(b => b.setAttribute('aria-pressed', b.dataset.mm === E.motionMode)); renderKnob(6); save(); }
   document.querySelectorAll('[data-mm]').forEach(b => b.onclick = () => setMotionMode(b.dataset.mm));
+  function setToneLink(on) { E.toneLink = !!on; $('tlink').setAttribute('aria-pressed', E.toneLink); $('trate-row').hidden = E.toneLink; save(); }
+  function setToneRate(v) { E.toneRate = clamp(v); $('trate').value = Math.round(E.toneRate * 1000); save(); }
+  $('tlink').onclick = () => { if (E.toneLink !== false && E.toneRate == null) E.toneRate = E.ctl.pulseRate; setToneLink(E.toneLink === false); setToneRate(E.toneRate ?? E.ctl.pulseRate); };
+  $('trate').oninput = e => setToneRate(e.target.value / 1000);
+  function setDuck(v) { E.sidechain = clamp(v); $('duck').value = Math.round(E.sidechain * 100); $('duck-v').textContent = Math.round(E.sidechain * 100); save(); }
+  $('duck').oninput = e => setDuck(e.target.value / 100);
+  setInterval(() => { if (!E.ctx) return; const t = E.toneHz(); $('trate-rd').textContent = 'tone ' + t.toFixed(2) + ' Hz'; $('trate-v').textContent = t.toFixed(2) + ' Hz'; }, 300);
   function setWander(v) { E.wander = clamp(v); $('wander').value = Math.round(E.wander * 100); $('wander-v').textContent = Math.round(E.wander * 100); save(); }
   function setBeatAmt(v) { E.beatAmt = clamp(v); $('beatamt').value = Math.round(E.beatAmt * 100); $('beatamt-v').textContent = Math.round(E.beatAmt * 100); save(); }
   $('wander').oninput = e => setWander(e.target.value / 100);
@@ -2399,7 +2460,7 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
   /* ================= Persist sound settings ================= */
   function save() {
     store.set('hf-sound-v2', { ctl: E.ctl, beatMode: E.beatMode, lockRoot: E.lockRoot, spread: E.spread, carrierH: E.carrierH,
-      filterType: E.filterType, motionMode: E.motionMode, wander: E.wander ?? 1, beatAmt: E.beatAmt ?? 1, lowCut: E.lowCut, motionSync: E.motionSync, motionDiv: E.motionDiv, motionFree: E.motionFree, descentMinutes: E.descentMinutes });
+      filterType: E.filterType, motionMode: E.motionMode, wander: E.wander ?? 1, beatAmt: E.beatAmt ?? 1, toneLink: E.toneLink !== false, toneRate: E.toneRate ?? null, sidechain: E.sidechain ?? .35, lowCut: E.lowCut, motionSync: E.motionSync, motionDiv: E.motionDiv, motionFree: E.motionFree, descentMinutes: E.descentMinutes });
   }
   const saved = store.get('hf-sound-v2', null);
   if (saved && typeof saved === 'object') {
@@ -2411,6 +2472,9 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
     if (typeof saved.motionSync === 'boolean') E.motionSync = saved.motionSync;
     if (saved.motionMode === 'phaser' || saved.motionMode === 'sweep') E.motionMode = saved.motionMode;
     if (typeof saved.wander === 'number') E.wander = clamp(saved.wander);
+    if (typeof saved.toneLink === 'boolean') E.toneLink = saved.toneLink;
+    if (typeof saved.toneRate === 'number') E.toneRate = clamp(saved.toneRate);
+    if (typeof saved.sidechain === 'number') E.sidechain = clamp(saved.sidechain);
     if (typeof saved.beatAmt === 'number') E.beatAmt = clamp(saved.beatAmt);
     for (const [k, a, b] of [['spread', 0, 1], ['carrierH', 2, 8], ['lowCut', 20, 200], ['motionDiv', 4, 32], ['motionFree', 0, 1], ['descentMinutes', 5, 30]]) { const v = num(saved[k], a, b); if (v != null) E[k] = v; }
     E.volume = E.ctl.level;
@@ -2524,7 +2588,7 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
   };
 
   // initial UI state
-  setBeat(E.beatMode); setFilterType(E.filterType); setMotionMode(E.motionMode || 'sweep'); setWander(E.wander ?? 1); setBeatAmt(E.beatAmt ?? 1); setDiv(E.motionSync ? E.motionDiv : 'free');
+  setBeat(E.beatMode); setFilterType(E.filterType); setMotionMode(E.motionMode || 'sweep'); setWander(E.wander ?? 1); setBeatAmt(E.beatAmt ?? 1); setToneLink(E.toneLink !== false); if (E.toneRate != null) setToneRate(E.toneRate); setDuck(E.sidechain ?? .35); setDiv(E.motionSync ? E.motionDiv : 'free');
   $('lock').setAttribute('aria-pressed', E.lockRoot);
   $('spread').value = Math.round(E.spread * 100); $('spread-v').textContent = Math.round(E.spread * 180) + '°';
   $('lowcut').value = E.lowCut; $('lowcut-v').textContent = E.lowCut + ' Hz';

@@ -638,8 +638,10 @@ class HarmonicEngine {
     split.connect(this.vcaL, 0); split.connect(this.vcaR, 1);
     this.vcaL.connect(merge, 0, 0); this.vcaR.connect(merge, 0, 1);
     this.pulseOut = merge;
-    this.pulseOut.connect(this.droneDry); this.droneDry.connect(this.master);
-    this.pulseOut.connect(this.droneWet); this.droneWet.connect(this.reverbSend);
+    this.duckG = c.createGain(); this.duckG.gain.value = 1;   // sidechain: the heartbeat ducks the drone
+    this.pulseOut.connect(this.duckG);
+    this.duckG.connect(this.droneDry); this.droneDry.connect(this.master);
+    this.duckG.connect(this.droneWet); this.droneWet.connect(this.reverbSend);
 
     /* Entrainment tone: binaural pair (hard L/R) or isochronic gated tone, pitched on a harmonic of the root.
        Goes straight to the compressor so the sculpt filter never swallows it. */
@@ -700,6 +702,21 @@ class HarmonicEngine {
     this.bellMix.connect(this.bellDry); this.bellDry.connect(this.master);
     this.bellMix.connect(this.bellWet); this.bellWet.connect(this.reverbSend);
     this.bellMix.connect(this.delayIn);
+    // Long stereo echo for strikes and bowls: ping-pong between ~1.9 s and ~2.9 s, darkening as it repeats
+    this.echoIn = c.createGain(); this.echoIn.gain.value = .55;
+    this.echoRack = c.createGain(); this.echoRack.gain.value = this.textureMix ?? .6; this.echoRack.connect(this.echoIn);
+    { const hp = c.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 180;
+      const dL = c.createDelay(6), dR = c.createDelay(6); dL.delayTime.value = 1.9; dR.delayTime.value = 2.87;
+      const lpL = c.createBiquadFilter(), lpR = c.createBiquadFilter(); lpL.type = lpR.type = 'lowpass'; lpL.frequency.value = lpR.frequency.value = 2400;
+      const fbL = c.createGain(), fbR = c.createGain(); fbL.gain.value = fbR.gain.value = .62;
+      const mg = c.createChannelMerger(2); this.echoOut = c.createGain(); this.echoOut.gain.value = .7;
+      this.echoIn.connect(hp); hp.connect(dL);
+      dL.connect(lpL); lpL.connect(fbL); fbL.connect(dR);
+      dR.connect(lpR); lpR.connect(fbR); fbR.connect(dL);
+      dL.connect(mg, 0, 0); dR.connect(mg, 0, 1); mg.connect(this.echoOut);
+      this.echoOut.connect(this.master);
+      const es = c.createGain(); es.gain.value = .35; this.echoOut.connect(es); es.connect(this.reverbSend); }
+    this.bellMix.connect(this.echoIn);
 
     this.master.gain.setTargetAtTime(this.volume * this.sleepMul, c.currentTime, 1.5);
     if (this.onStarted) this.onStarted();
@@ -731,7 +748,12 @@ class HarmonicEngine {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
     if (this.bellMix) this.bellMix.gain.setTargetAtTime(this.textureMix, t, .3);
+    if (this.echoRack) this.echoRack.gain.setTargetAtTime(this.textureMix, t, .3);
     if (this.rackBus) this.rackBus.gain.setTargetAtTime(this.textureMix, t, .3);
+  }
+  duck(t, vel = 1) {
+    const amt = clamp((this.sidechain ?? .35) * vel); if (!this.duckG || amt < .005) return;
+    const g = this.duckG.gain; g.setTargetAtTime(1 - amt, t, .012); g.setTargetAtTime(1, t + .07, .28);
   }
   setVolume(v) { this.volume = v; if (this.ctx) this.master.gain.setTargetAtTime(v * this.sleepMul, this.ctx.currentTime, .2); }
   setRoot(hz) { this.targetRoot = clamp(hz, 20, 400); this._glideRoot(); }
@@ -941,11 +963,11 @@ class HarmonicEngine {
     while (f < 190) { f *= 2; oct++; } while (f > 1500) { f /= 2; oct--; }
     if (Math.random() < .25 && f * 2 < 2000) { f *= 2; oct++; }
     const bowl = Math.random() < e.timbre;
-    const ratios = bowl ? [1, 2.71, 5.15, 8.1] : [1, 2, 3, 4.1];
+    const ratios = bowl ? [1, 2, 2.71, 3, 5.15] : [1, 2, 3, 4.1];
     // brightness 0 (low, ~190 Hz) .. 1 (high, ~2 kHz): brighter strikes play quieter and with softer overtones
     const bright = clamp(Math.log2(f / 190) / Math.log2(2000 / 190));
     const tame = lerp(1, .45, bright);
-    const levels = (bowl ? [1, .45, .22, .1] : [1, .38, .14, .05]).map((l, i) => i ? l * tame * tame : l);
+    const levels = (bowl ? [1, .3, .4, .16, .18] : [1, .38, .14, .05]).map((l, i) => i ? l * tame * tame : l);
     vel *= (this.strikeLevel ?? .5) * lerp(1, .45, bright);
     const decay = (bowl ? 5 : 2.4) * lerp(.8, 1.6, e.depth);
     const attack = bowl ? .06 : .004;
@@ -1463,13 +1485,15 @@ class LayerRack {
     const bright = clamp(Math.log2(f / 140) / Math.log2(620 / 140));
     vel *= (this.E.strikeLevel ?? .5) * 1.2 * lerp(1, .5, bright);
     const out = this._env(t, .16 * vel, .09, 11, this._panner(Math.random() * 1.4 - .7, S.g)), stop = t + 16;
+    if (this.E.echoRack) out.connect(this.E.echoRack);
     const tame = lerp(1, .5, bright);
-    [[1, 1], [2.71, .4], [5.15, .18]].forEach(([r, l], i) => {
+    [[1, 1], [2, .28], [2.71, .38], [3, .14], [5.15, .16]].forEach(([r, l], i) => {
       const g = this.c.createGain(); g.gain.value = i ? l * tame * tame : l; g.connect(out);
       this._osc('sine', f * r, t, stop, g); { const w = this.c.createGain(); w.gain.value = .3; w.connect(g); this._osc('sine', f * r + 1.1 + i * 1.7, t, stop, w); }
     });
   }
   _thump(S, t, vel) {
+    if (this.E.duck) this.E.duck(t, vel);
     const c = this.c, f0 = this._fold(this.E.root, 38, 70);
     const g = this._env(t, .55 * vel, .006, 1.1, S.g);
     const o = c.createOscillator(); o.type = 'sine';
@@ -1546,7 +1570,8 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
   const QS = new URLSearchParams(location.search);
   const FADE = Math.max(3, Math.min(120, +QS.get('fade') || 30));   // seconds for a mood change; ?fade=45 to change
   E.strikeLevel = Math.max(0, Math.min(1.5, QS.has('strikes') ? +QS.get('strikes') : .5));
-  E.textureMix = .6; // ?strikes=0.3 quieter, 0 = none
+  E.textureMix = .6;
+  E.sidechain = 0;   // heartbeat ducking is a Studio feature // ?strikes=0.3 quieter, 0 = none
   E.beatMode = 'isochronic'; E.ctl.beatLevel = .22; E.ctl.pulseDepth = .3; E.lowCut = 35;
 
   const PRESETS = [
