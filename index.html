@@ -656,7 +656,7 @@ class HarmonicEngine {
     // isochronic tone gets its own clear on/off gate at the pulse rate, softened just enough not to click
     this.isoShape = c.createWaveShaper(); this.isoShape.curve = this._shapeCurve(7); this.pLfo.connect(this.isoShape);
     const isoSm = c.createBiquadFilter(); isoSm.type = 'lowpass'; isoSm.frequency.value = 70; isoSm.Q.value = .5; this.isoShape.connect(isoSm);
-    const isoAmt = c.createGain(); isoAmt.gain.value = .5; isoSm.connect(isoAmt); isoAmt.connect(this.isoVCA.gain);
+    this.isoAmt = c.createGain(); this.isoAmt.gain.value = .5; isoSm.connect(this.isoAmt); this.isoAmt.connect(this.isoVCA.gain);
     this.isoG = c.createGain(); this.isoG.gain.value = 0;
     this.isoO.connect(this.isoVCA); this.isoVCA.connect(this.isoG); this.isoG.connect(this.beatBus);
     this.isoO.start();
@@ -689,12 +689,17 @@ class HarmonicEngine {
     this.noise.start();
 
     // Strike voices bus
-    this.bellBus = c.createGain(); this.bellBus.gain.value = .55 * (this.textureMix ?? .6);
+    this.bellBus = c.createGain(); this.bellBus.gain.value = .55;
     this.bellDry = c.createGain(); this.bellDry.gain.value = .6;
     this.bellWet = c.createGain(); this.bellWet.gain.value = .7;
-    this.bellBus.connect(this.bellDry); this.bellDry.connect(this.master);
-    this.bellBus.connect(this.bellWet); this.bellWet.connect(this.reverbSend);
-    this.bellBus.connect(this.delayIn);
+    const mkLev = (th = -44, ratio = 4, gain = 3.2) => { const k = c.createDynamicsCompressor(); k.threshold.value = th; k.ratio.value = ratio; k.knee.value = 8; k.attack.value = .004; k.release.value = .35;
+      const o = c.createGain(); o.gain.value = gain * Math.pow(10, (th - th / ratio) * .6 / 20); k.connect(o); return { in: k, out: o }; }; // undo the built-in makeup gain
+    this.mkLev = mkLev;
+    this.bellLev = mkLev(); this.bellBus.connect(this.bellLev.in);
+    this.bellMix = c.createGain(); this.bellMix.gain.value = this.textureMix ?? .6; this.bellLev.out.connect(this.bellMix);   // texture amount after the leveller
+    this.bellMix.connect(this.bellDry); this.bellDry.connect(this.master);
+    this.bellMix.connect(this.bellWet); this.bellWet.connect(this.reverbSend);
+    this.bellMix.connect(this.delayIn);
 
     this.master.gain.setTargetAtTime(this.volume * this.sleepMul, c.currentTime, 1.5);
     if (this.onStarted) this.onStarted();
@@ -725,7 +730,7 @@ class HarmonicEngine {
     this.textureMix = clamp(v, 0, 1.5);
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
-    if (this.bellBus) this.bellBus.gain.setTargetAtTime(.55 * this.textureMix, t, .3);
+    if (this.bellMix) this.bellMix.gain.setTargetAtTime(this.textureMix, t, .3);
     if (this.rackBus) this.rackBus.gain.setTargetAtTime(this.textureMix, t, .3);
   }
   setVolume(v) { this.volume = v; if (this.ctx) this.master.gain.setTargetAtTime(v * this.sleepMul, this.ctx.currentTime, .2); }
@@ -865,7 +870,7 @@ class HarmonicEngine {
 
     // generative strikes
     const rate = Math.pow(e.density, 1.6) * 1.3;
-    if (Math.random() < rate * dt) this._bell(this._pickHarmonic(e), .25 + Math.random() * .7);
+    if (Math.random() < rate * dt) this._bell(this._pickHarmonic(e), .6 + Math.random() * .3);
 
     this._tickPulse(now);
     this._tickFilter(now);
@@ -875,7 +880,9 @@ class HarmonicEngine {
     const C = this.ctl, hz = this.pulseHz();
     this.pLfo.frequency.setTargetAtTime(hz, now, .25);
     const drive = MAP.pulseShape(C.pulseShape);
-    if (Math.abs(drive - this._lastDrive) > .05) { this.pShape.curve = this._shapeCurve(drive); this._lastDrive = drive; }
+    if (Math.abs(drive - this._lastDrive) > .05) { this.pShape.curve = this._shapeCurve(drive); this.isoShape.curve = this._shapeCurve(Math.max(1, drive)); this._lastDrive = drive; }
+    { const sh = clamp(C.pulseShape ?? 0), td = lerp(.4, 1, Math.min(1, sh / .85));   // tone pulse depth: 40% at sine .. 100% at gate
+      this.isoVCA.gain.setTargetAtTime(1 - td / 2, now, .1); this.isoAmt.gain.setTargetAtTime(td / 2, now, .1); }
     const d = this.pulseOn ? C.pulseDepth : 0;
     // gain = (1 - d/2) + (d/2) * shaped  -> swings between 1-d and 1
     for (const [vca, amt] of [[this.vcaL, this.amtL], [this.vcaR, this.amtR]]) {
@@ -939,7 +946,7 @@ class HarmonicEngine {
     const bright = clamp(Math.log2(f / 190) / Math.log2(2000 / 190));
     const tame = lerp(1, .45, bright);
     const levels = (bowl ? [1, .45, .22, .1] : [1, .38, .14, .05]).map((l, i) => i ? l * tame * tame : l);
-    vel *= (this.strikeLevel ?? .4) * lerp(1, .28, bright);
+    vel *= (this.strikeLevel ?? .5) * lerp(1, .45, bright);
     const decay = (bowl ? 5 : 2.4) * lerp(.8, 1.6, e.depth);
     const attack = bowl ? .06 : .004;
     const out = c.createGain(); out.gain.value = 0;
@@ -959,7 +966,7 @@ class HarmonicEngine {
       o.connect(g); g.connect(out); o.start(now); o.stop(stopAt);
       if (bowl && i < 2) { // doubled mode = bowl wobble
         const o2 = c.createOscillator(); o2.frequency.value = f * r + (1.2 + Math.random() * 2.5) * (i + 1);
-        const g2 = c.createGain(); g2.gain.setValueAtTime(levels[i] * .8, now);
+        const g2 = c.createGain(); g2.gain.setValueAtTime(levels[i] * .3, now);
         g2.gain.setTargetAtTime(0, now + attack, (decay / 4) / (1 + i));
         o2.connect(g2); g2.connect(out); o2.start(now); o2.stop(stopAt);
       }
@@ -1224,12 +1231,13 @@ class LayerRack {
     const E = this.E, c = E.ctx;
     this.c = c;
     this.bus = c.createGain(); this.bus.gain.value = E.textureMix ?? .6; E.rackBus = this.bus;
+    this.lev = E.mkLev(-32, 2.5, 1.25); this.lev.out.connect(this.bus);   // layers -> leveller -> texture amount (bus)
     this.bus.connect(E.master);
     this.send = c.createGain(); this.send.gain.value = .55; this.bus.connect(this.send); this.send.connect(E.reverbSend);
     this.wet = c.createGain(); this.wet.gain.value = 1; this.wet.connect(E.reverbSend); // reverb-only path (shimmer, rain)
     for (const id in this.L) {
       const S = this.L[id];
-      S.g = c.createGain(); S.g.gain.value = 0; S.g.connect(this.bus);
+      S.g = c.createGain(); S.g.gain.value = 0; S.g.connect(this.lev.in);
       S.gw = c.createGain(); S.gw.gain.value = 0; S.gw.connect(this.wet);
       if (S.on) { this._startNodes(S, c.currentTime); S.g.gain.value = S.gw.gain.value = this._lvl(S); } // restarted engine: bring running layers back
     }
@@ -1392,7 +1400,7 @@ class LayerRack {
         if (rnd() < d / 4.5) {
           const h = [2, 3, 4, 6, 8][Math.floor(rnd() * 5)];
           const f = this._fold(R * h, 140, 620);
-          this._bowl(S, t, f, .5 + rnd() * .5);
+          this._bowl(S, t, f, .7 + rnd() * .25);
           this._visual(t, { h, freq: f, vel: .9, pan: rnd() * 1.6 - .8, bowl: true, oct: 0 });
         }
         break;
@@ -1453,12 +1461,12 @@ class LayerRack {
   _panner(p, dest) { const c = this.c; if (!c.createStereoPanner) return dest; const n = c.createStereoPanner(); n.pan.value = p; n.connect(dest); return n; }
   _bowl(S, t, f, vel) {
     const bright = clamp(Math.log2(f / 140) / Math.log2(620 / 140));
-    vel *= (this.E.strikeLevel ?? .4) * 1.2 * lerp(1, .35, bright);
+    vel *= (this.E.strikeLevel ?? .5) * 1.2 * lerp(1, .5, bright);
     const out = this._env(t, .16 * vel, .09, 11, this._panner(Math.random() * 1.4 - .7, S.g)), stop = t + 16;
     const tame = lerp(1, .5, bright);
     [[1, 1], [2.71, .4], [5.15, .18]].forEach(([r, l], i) => {
       const g = this.c.createGain(); g.gain.value = i ? l * tame * tame : l; g.connect(out);
-      this._osc('sine', f * r, t, stop, g); this._osc('sine', f * r + 1.1 + i * 1.7, t, stop, g);
+      this._osc('sine', f * r, t, stop, g); { const w = this.c.createGain(); w.gain.value = .3; w.connect(g); this._osc('sine', f * r + 1.1 + i * 1.7, t, stop, w); }
     });
   }
   _thump(S, t, vel) {
@@ -1537,7 +1545,7 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
 
   const QS = new URLSearchParams(location.search);
   const FADE = Math.max(3, Math.min(120, +QS.get('fade') || 30));   // seconds for a mood change; ?fade=45 to change
-  E.strikeLevel = Math.max(0, Math.min(1.5, QS.has('strikes') ? +QS.get('strikes') : .4));
+  E.strikeLevel = Math.max(0, Math.min(1.5, QS.has('strikes') ? +QS.get('strikes') : .5));
   E.textureMix = .6; // ?strikes=0.3 quieter, 0 = none
   E.beatMode = 'isochronic'; E.ctl.beatLevel = .22; E.ctl.pulseDepth = .3; E.lowCut = 35;
 
