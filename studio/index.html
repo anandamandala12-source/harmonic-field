@@ -75,6 +75,17 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
   border: 1px solid var(--line); border-radius: 18px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--line-2) transparent;
   transition: opacity .5s, transform .5s; }
 .panel.hiding { opacity: 0; transform: translateX(20px); pointer-events: none; }
+/* Screen window connected: this window is 100% controls */
+body.ctl-full #field { visibility: hidden; }
+body.ctl-full .panel, body.ctl-full .panel.hiding { top: 16px; left: 16px; right: 16px; bottom: 16px; width: auto; max-height: none; opacity: 1; transform: none; pointer-events: auto;
+  display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); align-content: start; background: #0b0b12; }
+body.ctl-full .panel > .panel-head, body.ctl-full .panel > .audio-alert { grid-column: 1 / -1; }
+body.ctl-full .panel > .sec-pads { grid-column: 1; grid-row: 2 / span 2; }
+body.ctl-full .panel > .sec-knobs { grid-column: 1; grid-row: 4; }
+body.ctl-full .panel > .tabs { grid-column: 2; grid-row: 2; }
+body.ctl-full .panel > .pane { grid-column: 2; grid-row: 3 / span 3; border-left: 1px solid var(--line); }
+body.ctl-full .gpad { aspect-ratio: auto; min-height: 96px; }
+body.ctl-full .show-btn { display: none; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 16px 14px; border-bottom: 1px solid var(--line); }
 .brand { display: flex; gap: 12px; align-items: center; }
 .brand-name { font-family: var(--font-display); font-size: 19px; line-height: 1.1; }
@@ -363,14 +374,14 @@ window.addEventListener('error',function(e){var n=document.getElementById('hf-er
     <div class="aa-btns"><button class="chip on-accent" id="aa-resume">Resume</button><button class="chip" id="aa-restart">Restart audio</button></div>
   </div>
 
-  <div class="section">
+  <div class="section sec-pads">
     <div class="label-row"><span class="label">Pads</span><span class="label dim" id="pad-hint">hold ⇧ for more</span></div>
     <div class="padgrid" id="padgrid"></div>
     <div class="morph-track"><div id="morph-bar" class="morph-bar"></div></div>
     <div class="scene-note" id="scene-note"></div>
   </div>
 
-  <div class="section">
+  <div class="section sec-knobs">
     <div class="label-row"><span class="label">Knobs</span><span class="label dim">drag · scroll · double-click resets</span></div>
     <div class="knobs" id="knobs"></div>
   </div>
@@ -387,9 +398,9 @@ window.addEventListener('error',function(e){var n=document.getElementById('hf-er
   <div class="pane" data-pane="field">
     <div class="section">
       <div class="label-row"><span class="label">Field</span><span class="label dim">drag · double-click centers</span></div>
-      <div class="xy" id="xy" tabindex="0" aria-label="Morph pad: horizontal brightness, vertical depth">
+      <div class="xy" id="xy" tabindex="0" aria-label="Morph pad: horizontal brightness, vertical space (reverb, echo and how long strikes ring)">
         <span class="xy-axis xy-x">darker ← brightness → brighter</span>
-        <span class="xy-axis xy-y">depth</span>
+        <span class="xy-axis xy-y">space ↑ (reverb, echo, ring)</span>
         <div class="xy-dot" id="xy-dot"></div>
       </div>
     </div>
@@ -405,6 +416,8 @@ window.addEventListener('error',function(e){var n=document.getElementById('hf-er
     </div>
     <div class="section sliders">
       <label class="slider"><span class="label">Morph</span><input id="morph" type="range" min="1" max="60" value="12"><span class="val" id="morph-v">12s</span></label>
+      <label class="slider mt"><span class="label">Drift</span><input id="drift" type="range" min="0" max="100" value="100"><span class="val" id="drift-v">100</span></label>
+      <p class="hint">Drift lets each overtone slowly wander in level and adds gentle beating from paired, slightly detuned tones. 0 holds the drone perfectly still.</p>
     </div>
     <div class="section">
       <div class="label-row"><span class="label">Partials 1–16</span><span class="label dim" id="rd-partials"></span></div>
@@ -469,6 +482,11 @@ window.addEventListener('error',function(e){var n=document.getElementById('hf-er
         <button data-ft="lowpass">Low-pass</button><button data-ft="bandpass">Band</button><button data-ft="highpass">High-pass</button><button data-ft="formant">Vowel</button>
       </div>
       <p class="hint" id="ft-hint"></p>
+    </div>
+    <div class="section">
+      <div class="label-row"><span class="label">Motion (knob 7)</span><span class="label dim">what the Motion knob moves</span></div>
+      <div class="seg" id="mmodes"><button data-mm="sweep">Filter sweep</button><button data-mm="phaser">Phaser (upper register)</button></div>
+      <p class="hint">Filter sweep moves the cutoff up and down. Phaser leaves the filter alone and swirls only the sound above about 500 Hz.</p>
     </div>
     <div class="section">
       <div class="label-row"><span class="label">Motion speed</span><span class="label dim" id="motion-rd"></span></div>
@@ -629,7 +647,7 @@ class HarmonicEngine {
 
     // Pulse (brainwave) + sculpt filter state
     this.ctl = { pulseRate: UNMAP.pulseRate(6), pulseDepth: .35, pulseShape: .15, beatLevel: .35,
-      cutoff: 1, resonance: .12, motion: .3, level: .8, textures: .4 };
+      cutoff: 1, resonance: .12, motion: 0, level: .8, textures: .4 };
     this.pulseOn = true;
     this.beatMode = 'isochronic';
     this.lockRoot = true;        // pulse = root / n, an exact subharmonic of the drone
@@ -715,8 +733,7 @@ class HarmonicEngine {
     this.formG = c.createGain(); this.formG.gain.value = 0;
     this.fOut = c.createGain();
     this.master.connect(this.lowCutF);
-    // Low-pass mode: classic full-range filter
-    this.lowCutF.connect(this.biq); this.biq.connect(this.biq2); this.biq2.connect(this.biqG); this.biqG.connect(this.fOut);
+    // Low-pass is applied to the band above the split, so the sub never gets filtered away (wired below)
     // Other modes: split at ~100 Hz. The sub band always passes at 100%; only the upper band is filtered,
     // in parallel with its dry signal (filtered part is at most half), so the bass never drops out.
     this.splitHz = 100;
@@ -730,6 +747,7 @@ class HarmonicEngine {
     this.lowCutF.connect(this.xLo[0]); this.xLo[0].connect(this.xLo[1]); this.xLo[1].connect(this.subG); this.subG.connect(this.fOut);
     this.lowCutF.connect(this.xHi[0]); this.xHi[0].connect(this.xHi[1]); this.xHi[1].connect(this.upDry); this.upDry.connect(this.fOut);
     this.xHi[1].connect(this.biqM); this.biqM.connect(this.biqM2); this.biqM2.connect(this.upWet); this.upWet.connect(this.fOut);
+    this.xHi[1].connect(this.biq); this.biq.connect(this.biq2); this.biq2.connect(this.biqG); this.biqG.connect(this.fOut);
     this.filterWet = .5;
     this.formants = [0, 1, 2].map(i => {
       const f = c.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = VOWELS[2].f[i]; f.Q.value = 8;
@@ -745,11 +763,14 @@ class HarmonicEngine {
     this.phAps.reduce((prev, ap) => { prev.connect(ap); return ap; }, this.phIn).connect(this.phG);
     this.phG.connect(this.fOut);
     this.fOut.connect(this.comp);
-    // filter LFO -> detune (cents) of the phaser stages only; the main filter stays where you set it
+    // Motion LFO: either sweeps the filter cutoff (Sweep) or the phaser stages (Phaser)
+    this.motionMode = 'sweep';
     this.fLfo = c.createOscillator(); this.fLfo.frequency.value = .05;
-    this.fLfoAmt = c.createGain(); this.fLfoAmt.gain.value = 0;
-    this.fLfo.connect(this.fLfoAmt);
-    this.phAps.forEach(f => this.fLfoAmt.connect(f.detune));
+    this.fLfoAmt = c.createGain(); this.fLfoAmt.gain.value = 0;     // sweep depth (cents) -> filter stages
+    this.phLfoAmt = c.createGain(); this.phLfoAmt.gain.value = 0;   // phaser depth (cents) -> allpass stages
+    this.fLfo.connect(this.fLfoAmt); this.fLfo.connect(this.phLfoAmt);
+    [this.biq, this.biq2, this.biqM, this.biqM2, ...this.formants].forEach(f => this.fLfoAmt.connect(f.detune));
+    this.phAps.forEach(f => this.phLfoAmt.connect(f.detune));
     this.fLfo.start();
 
     this.comp.connect(this.limiter);
@@ -953,7 +974,7 @@ class HarmonicEngine {
 
     // partial amplitudes
     const tilt = lerp(2.3, .65, e.brightness);
-    const drift = clamp((this.ctl.motion ?? .3) * 2);   // Motion knob: 0 = perfectly still drone
+    const drift = clamp(this.drift ?? 1);   // Drift: each overtone wanders in level, paired tones beat; 0 = perfectly still
     const walkSpeed = (.05 + e.motion * .6) * drift;
     let sumSq = 0; const amps = [];
     for (let i = 0; i < H_COUNT; i++) {
@@ -1034,7 +1055,7 @@ class HarmonicEngine {
     const C = this.ctl, type = this.filterType, q = MAP.resonance(C.resonance);
     const formant = type === 'formant', lp = type === 'lowpass', wet = clamp(this.filterWet ?? .5, 0, .5);
     this.biqG.gain.setTargetAtTime(lp ? 1 : 0, now, .08);
-    this.subG.gain.setTargetAtTime(lp ? 0 : 1, now, .08);
+    this.subG.gain.setTargetAtTime(1, now, .08);
     this.upDry.gain.setTargetAtTime(lp ? 0 : 1 - wet, now, .08);
     this.upWet.gain.setTargetAtTime(lp || formant ? 0 : wet * (type === 'bandpass' ? 1 + q * .35 : 1), now, .08);
     this.formG.gain.setTargetAtTime(formant ? wet * 1.4 : 0, now, .08);
@@ -1061,9 +1082,10 @@ class HarmonicEngine {
     this.lowCutF.frequency.setTargetAtTime(this.lowCut, now, .1);
     const lfoHz = this.motionSync ? this.pulseHz() / this.motionDiv : MAP.motionRate(this.motionFree);
     this.fLfo.frequency.setTargetAtTime(lfoHz, now, .3);
-    const m = clamp(C.motion);
-    this.fLfoAmt.gain.setTargetAtTime(m > .005 ? 900 + 1500 * m : 0, now, .2);   // phaser sweep depth (cents)
-    this.phG.gain.setTargetAtTime(.55 * Math.sqrt(m), now, .2);                // phaser amount, 0 = none
+    const m = clamp(C.motion), ph = this.motionMode === 'phaser';
+    this.fLfoAmt.gain.setTargetAtTime(ph ? 0 : MAP.motion(m), now, .2);                 // filter sweep depth (cents)
+    this.phLfoAmt.gain.setTargetAtTime(ph && m > .005 ? 900 + 1500 * m : 0, now, .2);   // phaser sweep depth (cents)
+    this.phG.gain.setTargetAtTime(ph ? .55 * Math.sqrt(m) : 0, now, .2);               // phaser amount, 0 = none
   }
   vowelName() { const x = this.ctl.cutoff * (VOWELS.length - 1); return VOWELS[Math.round(x)].v; }
 
@@ -1876,7 +1898,7 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
     { k: 'beatLevel', name: 'Tone', def: .35, fmt: v => E.beatMode === 'off' ? 'off' : Math.round(v * 100) + '%', accent: 'pulse' },
     { k: 'cutoff', name: 'Cutoff', def: 1, fmt: v => E.filterType === 'formant' ? `“${E.vowelName()}”` : fmtHz(MAP.cutoff(v)) },
     { k: 'resonance', name: 'Reso', def: .12, fmt: v => 'Q ' + MAP.resonance(v).toFixed(1) },
-    { k: 'motion', name: 'Motion', def: .3, fmt: v => v < .01 ? 'still' : Math.round(v * 100) + '%' },
+    { k: 'motion', name: 'Motion', def: 0, fmt: v => v < .01 ? 'still' : E.motionMode === 'phaser' ? 'phaser ' + Math.round(v * 100) + '%' : '±' + (MAP.motion(v) / 1200).toFixed(2) + ' oct' },
     { k: 'level', name: 'Level', def: .8, fmt: v => Math.round(v * 100) },
     { k: 'textures', name: 'Textures', def: .4, fmt: v => v < .01 ? 'off' : Math.round(v * 150) },
   ];
@@ -2049,10 +2071,10 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
 
   /* ================= Filter tab ================= */
   const FT_HINT = {
-    lowpass: 'Cutoff darkens the whole field, reverb tail included. Reso adds a singing peak at the edge.',
-    bandpass: 'Keeps a single band. Sweep Cutoff to pick out single overtones, which sounds like overtone singing.',
-    highpass: 'Thins the field from below. Use it to lift everything up and out of the floor.',
-    formant: 'Cutoff morphs through the vowels U, O, A, E and I. Reso narrows the formants. It sounds like a throat singer shaping the drone.',
+    lowpass: 'Cutoff darkens everything above the sub, reverb tail included. The sub below ~100 Hz always stays at full level. Reso adds a singing peak at the edge.',
+    bandpass: 'Picks out single overtones above the sub, blended at half with the open sound, so the bass stays full.',
+    highpass: 'Lifts the upper register, blended at half with the open sound. The sub below ~100 Hz stays at full level.',
+    formant: 'Cutoff morphs through the vowels U, O, A, E and I above the sub, blended at half. Reso narrows the formants.',
   };
   function setFilterType(t) {
     E.filterType = t;
@@ -2070,6 +2092,10 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
   }
   document.querySelectorAll('[data-div]').forEach(b => b.onclick = () => setDiv(b.dataset.div));
   $('mfree').oninput = e => { E.motionFree = e.target.value / 100; save(); };
+  function setMotionMode(m) { E.motionMode = m === 'phaser' ? 'phaser' : 'sweep'; document.querySelectorAll('[data-mm]').forEach(b => b.setAttribute('aria-pressed', b.dataset.mm === E.motionMode)); renderKnob(6); save(); }
+  document.querySelectorAll('[data-mm]').forEach(b => b.onclick = () => setMotionMode(b.dataset.mm));
+  function setDrift(v) { E.drift = clamp(v); $('drift').value = Math.round(E.drift * 100); $('drift-v').textContent = Math.round(E.drift * 100); save(); }
+  $('drift').oninput = e => setDrift(e.target.value / 100);
   $('lowcut').oninput = e => { E.lowCut = +e.target.value; $('lowcut-v').textContent = e.target.value + ' Hz'; save(); };
 
   /* ================= Drift ================= */
@@ -2342,7 +2368,7 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
   /* ================= Persist sound settings ================= */
   function save() {
     store.set('hf-sound-v2', { ctl: E.ctl, beatMode: E.beatMode, lockRoot: E.lockRoot, spread: E.spread, carrierH: E.carrierH,
-      filterType: E.filterType, lowCut: E.lowCut, motionSync: E.motionSync, motionDiv: E.motionDiv, motionFree: E.motionFree, descentMinutes: E.descentMinutes });
+      filterType: E.filterType, motionMode: E.motionMode, drift: E.drift ?? 1, lowCut: E.lowCut, motionSync: E.motionSync, motionDiv: E.motionDiv, motionFree: E.motionFree, descentMinutes: E.descentMinutes });
   }
   const saved = store.get('hf-sound-v2', null);
   if (saved && typeof saved === 'object') {
@@ -2352,6 +2378,8 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
     if (FILTER_TYPES.includes(saved.filterType)) E.filterType = saved.filterType;
     if (typeof saved.lockRoot === 'boolean') E.lockRoot = saved.lockRoot;
     if (typeof saved.motionSync === 'boolean') E.motionSync = saved.motionSync;
+    if (saved.motionMode === 'phaser' || saved.motionMode === 'sweep') E.motionMode = saved.motionMode;
+    if (typeof saved.drift === 'number') E.drift = clamp(saved.drift);
     for (const [k, a, b] of [['spread', 0, 1], ['carrierH', 2, 8], ['lowCut', 20, 200], ['motionDiv', 4, 32], ['motionFree', 0, 1], ['descentMinutes', 5, 30]]) { const v = num(saved[k], a, b); if (v != null) E[k] = v; }
     E.volume = E.ctl.level;
   }
@@ -2406,7 +2434,8 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
     if (data?.t === 'hello') { const was = projLive(); projLast = performance.now(); if (!was) { renderScreen(); status('Screen window connected. Controls stay here, visuals play there.'); } }
     if (data?.t === 'gone') { projLast = 0; renderScreen(); }
   };
-  function renderScreen() { $('screen').setAttribute('aria-pressed', projLive()); }
+  function renderScreen() { const on = projLive(); $('screen').setAttribute('aria-pressed', on); document.body.classList.toggle('ctl-full', on); }
+  setInterval(() => { if (document.body.classList.contains('ctl-full') !== projLive()) renderScreen(); }, 1000);
   $('screen').onclick = () => {
     if (!bc) { status('This browser can’t link a second window. Use Safari or Chrome.'); return; }
     const url = location.origin + location.pathname + '?view=projector';
@@ -2463,7 +2492,7 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
   };
 
   // initial UI state
-  setBeat(E.beatMode); setFilterType(E.filterType); setDiv(E.motionSync ? E.motionDiv : 'free');
+  setBeat(E.beatMode); setFilterType(E.filterType); setMotionMode(E.motionMode || 'sweep'); setDrift(E.drift ?? 1); setDiv(E.motionSync ? E.motionDiv : 'free');
   $('lock').setAttribute('aria-pressed', E.lockRoot);
   $('spread').value = Math.round(E.spread * 100); $('spread-v').textContent = Math.round(E.spread * 180) + '°';
   $('lowcut').value = E.lowCut; $('lowcut-v').textContent = E.lowCut + ' Hz';
@@ -2477,7 +2506,7 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
   let slow = 0;
   let fbuf = null;
   function frame() {
-    V.frame();
+    if (!document.body.classList.contains('ctl-full')) V.frame();   // visuals live on the Screen window while it's connected
     if (E.ctx && bc && projLive()) {
       if (!fbuf) fbuf = new Uint8Array(E.analyser.frequencyBinCount);
       E.analyser.getByteFrequencyData(fbuf);
