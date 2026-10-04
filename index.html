@@ -318,6 +318,8 @@ body.proj-view .gate, body.proj-view .panel, body.proj-view .show-btn, body.proj
 body.idle .dock { opacity: 0; transform: translate(-50%, 16px); pointer-events: none; }
 body.idle { cursor: none; }
 .sbtns { display: grid; grid-template-columns: repeat(8, 1fr); gap: 8px; }
+.sutil { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
+.sbtn.util { min-height: 52px; padding-top: 8px; padding-bottom: 8px; padding-left: 28px; }
 .sbtn { position: relative; min-height: 86px; border-radius: 14px; border: 1px solid var(--line); background: rgba(255,255,255,.02);
   display: flex; flex-direction: column; justify-content: flex-end; align-items: flex-start; padding: 10px; text-align: left;
   transition: border-color .25s, background .25s, transform .08s; touch-action: manipulation; }
@@ -350,7 +352,9 @@ body.idle { cursor: none; }
 .toast.on { opacity: 1; transform: translate(-50%, 0); }
 @media (max-width: 820px) {
   .sbtns { grid-template-columns: repeat(4, 1fr); }
-  .sbtn { min-height: 72px; padding: 9px; }
+  .sbtn { min-height: 72px; padding: 30px 9px 9px; }
+  .sbtn.util { min-height: 48px; padding: 8px 9px 8px 26px; }
+  .sbtn.util .sk { display: none; }
   .sbtn .sn { font-size: 13px; }
   .sknobs { grid-template-columns: 1fr; gap: 10px; }
   .sknob { grid-template-columns: 58px 1fr 64px; }
@@ -383,6 +387,7 @@ window.addEventListener('error',function(e){var n=document.getElementById('hf-er
 
 <div id="dock" class="dock" hidden>
   <div class="sbtns" id="sbtns"></div>
+  <div class="sutil" id="sutil"></div>
   <div class="sknobs">
     <label class="sknob"><span class="label">Volume</span><input id="vol" type="range" min="0" max="100" value="80" aria-label="Volume"><span class="val" id="vol-v">80</span></label>
     <label class="sknob"><span class="label">Textures</span><input id="tex" type="range" min="0" max="150" value="60" aria-label="Textures: drone only to more ocean, strikes and layers"><span class="val" id="tex-v">60</span></label>
@@ -419,6 +424,15 @@ const SCENES = [
   { id: 'void', name: 'Void', key: '5', note: 'Sub and space, almost nothing',
     p: { brightness: .08, hollow: .50, beating: .15, density: .03, timbre: .90, depth: 1.0, air: .32, warmth: .14, motion: .10, ground: 1.0, exotic: .3 },
     v: { n: 1, m: 4, a: [.3, .32, .85], b: [.12, .1, .4], c: [.6, .55, 1.0] } },
+  { id: 'heart', name: 'Heart Glow', key: '6', note: 'Warm, tender, softly rounded',
+    p: { brightness: .34, hollow: .18, beating: .38, density: .10, timbre: .60, depth: .70, air: .12, warmth: .56, motion: .28, ground: .92, exotic: .05 },
+    v: { n: 2, m: 5, a: [1.0, .48, .52], b: [.7, .2, .32], c: [1.0, .82, .74] } },
+  { id: 'temple', name: 'Temple', key: '7', note: 'Bowls and stone, grounded and rich',
+    p: { brightness: .30, hollow: .34, beating: .46, density: .16, timbre: .96, depth: .86, air: .10, warmth: .40, motion: .24, ground: 1.0, exotic: .22 },
+    v: { n: 3, m: 4, a: [.95, .62, .26], b: [.5, .18, .1], c: [1.0, .78, .45] } },
+  { id: 'moon', name: 'Moonrise', key: '8', note: 'Cool, spacious, silvery',
+    p: { brightness: .52, hollow: .56, beating: .30, density: .12, timbre: .70, depth: .95, air: .20, warmth: .62, motion: .34, ground: .85, exotic: .48 },
+    v: { n: 4, m: 6, a: [.62, .72, .95], b: [.2, .26, .5], c: [.88, .92, 1.0] } },
 ];
 
 const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
@@ -1512,6 +1526,9 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
     { name: 'Bloom', sub: 'Bright and open', scene: 2, rate: 8, depth: .25, layers: { handpan: .35 } },
     { name: 'Starlight', sub: 'Shimmer and voices', scene: 3, rate: 7, depth: .3, layers: { shimmer: .35, choir: .3 } },
     { name: 'Deep Rest', sub: 'For letting go', scene: 4, rate: 3, depth: .4, layers: { heart: .4 } },
+    { name: 'Heart Glow', sub: 'Warm and tender', scene: 5, rate: 6, depth: .3, layers: { heart: .25, choir: .2 } },
+    { name: 'Temple', sub: 'Bowls and stone', scene: 6, rate: 5, depth: .3, layers: { bowls: .45 } },
+    { name: 'Moonrise', sub: 'Cool and spacious', scene: 7, rate: 4, depth: .35, layers: { choir: .3 } },
   ];
   let current = 0, journey = null;
   function applyPreset(i, seconds = FADE) {
@@ -1548,17 +1565,18 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
   /* 8 buttons, same order as keys 1–8 */
   const BTNS = [
     ...PRESETS.map((p, i) => ({ name: p.name, sub: p.sub, act: () => applyPreset(i), lit: () => current === i, sw: SCENES[p.scene].v })),
-    { name: 'Journey', sub: 'Let it drift', act: toggleJourney, lit: () => !!journey },
-    { name: 'Sleep', sub: () => sleep.minutes ? sleep.label() : 'Off', act: cycleSleep, lit: () => sleep.minutes > 0 },
-    { name: 'Pause', sub: () => paused ? 'Paused' : 'Playing', act: togglePause, lit: () => paused },
+    { name: 'Journey', sub: () => journey ? 'Drifting' : 'Off', act: toggleJourney, lit: () => !!journey, util: true },
+    { name: 'Sleep', sub: () => sleep.minutes ? sleep.label() : 'Off', act: cycleSleep, lit: () => sleep.minutes > 0, util: true },
+    { name: 'Pause', sub: () => paused ? 'Paused' : 'Playing', act: togglePause, lit: () => paused, util: true },
   ];
   const rgb = a => `rgb(${a.map(x => Math.round(x * 255)).join(',')})`;
   const btnEls = BTNS.map((b, i) => {
     const el = document.createElement('button'); el.className = 'sbtn';
     const sw = b.sw ? `<span class="sw" style="background:radial-gradient(circle at 35% 35%, ${rgb(b.sw.c)}, ${rgb(b.sw.a)} 55%, ${rgb(b.sw.b)})"></span>` : '<span class="pled"></span>';
-    el.innerHTML = `${sw}<span class="sk">${i + 1}</span><span class="sn">${b.name}</span><span class="ss"></span>`;
+    el.innerHTML = `${sw}<span class="sk">${b.util ? (b.key || '') : i + 1}</span><span class="sn">${b.name}</span><span class="ss"></span>`;
+    if (b.util) el.classList.add('util');
     el.onclick = () => { if (!E.ctx) return; b.act(); flash(i); };
-    $('sbtns').appendChild(el); return el;
+    $(b.util ? 'sutil' : 'sbtns').appendChild(el); return el;
   });
   function flash(i) { const el = btnEls[i]; el.classList.remove('hit'); void el.offsetWidth; el.classList.add('hit'); }
   function render() {
@@ -1608,16 +1626,14 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
 
   /* keyboard: 1–8 buttons, - = volume, [ ] tone. Keys never reveal the controls (good for installations). */
   /* learnable mapping for any 8-key, 2-knob pad: each action remembers whatever key the pad sends */
-  const ACTIONS = [...BTNS.map((b, i) => ({ id: 'b' + i, label: `Key ${i + 1}: ${b.name}` })),
+  const ACTIONS = [...PRESETS.map((p, i) => ({ id: 'm' + i, label: `Key ${i + 1}: ${p.name}` })),
     { id: 'volDown', label: 'Knob A, turn left (volume down)' }, { id: 'volUp', label: 'Knob A, turn right (volume up)' },
-    { id: 'droneOnly', label: 'Knob A, press (drone only on/off)' },
+    { id: 'journey', label: 'Knob A, press (Journey on/off)' },
     { id: 'texDown', label: 'Knob B, turn left (fewer textures)' }, { id: 'texUp', label: 'Knob B, turn right (more textures)' },
-    { id: 'toneCycle', label: 'Knob B, press (darker / balanced / brighter)' },
-    { id: 'fade', label: 'Extra key: slow fade to silence and back' }, { id: 'controls', label: 'Extra key: show or hide controls' }];
-  const DEFAULT_MAP = { volDown: ['Minus'], volUp: ['Equal'], droneOnly: ['Digit0', 'Numpad0'], texDown: ['BracketLeft'], texUp: ['BracketRight'],
-    toneCycle: ['Backslash'], fade: ['Digit9', 'Numpad9'], controls: ['Semicolon'], toneDown: ['Comma'], toneUp: ['Period'] };
-  BTNS.forEach((b, i) => DEFAULT_MAP['b' + i] = ['Digit' + (i + 1), 'Numpad' + (i + 1)]);
-  const MKEY = 'hf-keymap';
+    { id: 'toneCycle', label: 'Knob B, press (darker / balanced / brighter)' }];
+  const DEFAULT_MAP = { volDown: ['Minus'], volUp: ['Equal'], journey: ['Digit0', 'Numpad0'], texDown: ['BracketLeft'], texUp: ['BracketRight'], toneCycle: ['Backslash'] };
+  PRESETS.forEach((p, i) => DEFAULT_MAP['m' + i] = ['Digit' + (i + 1), 'Numpad' + (i + 1)]);
+  const MKEY = 'hf-keymap2';
   let keymap = null; try { keymap = JSON.parse(localStorage.getItem(MKEY) || 'null'); } catch {}
   const sig = e => (e.ctrlKey ? 'C-' : '') + (e.altKey ? 'A-' : '') + (e.metaKey ? 'M-' : '') + (e.shiftKey ? 'S-' : '') + (e.code || e.key);
   const plainSig = e => e.code || e.key;
@@ -1627,17 +1643,15 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
     return null;
   }
   function run(id) {
-    if (id[0] === 'b') { const i = +id.slice(1); BTNS[i].act(); flash(i); return; }
+    if (/^m\d$/.test(id)) { const i = +id.slice(1); BTNS[i].act(); flash(i); return; }
+    if (id === 'journey') { toggleJourney(); flash(PRESETS.length); return; }
     if (id === 'volDown') { setVol(E.ctl.level - .04); toast('Volume ' + Math.round(E.ctl.level * 100)); }
     if (id === 'volUp') { setVol(E.ctl.level + .04); toast('Volume ' + Math.round(E.ctl.level * 100)); }
     if (id === 'toneDown') { setTone(tone - .08); toast('Tone ' + $('tone-v').textContent); }
     if (id === 'toneUp') { setTone(tone + .08); toast('Tone ' + $('tone-v').textContent); }
     if (id === 'texDown') { setTex(E.textureMix - .05); toast('Textures ' + Math.round(E.textureMix * 100)); }
     if (id === 'texUp') { setTex(E.textureMix + .05); toast('Textures ' + Math.round(E.textureMix * 100)); }
-    if (id === 'droneOnly') toggleDroneOnly();
     if (id === 'toneCycle') cycleTone();
-    if (id === 'fade') toggleFade();
-    if (id === 'controls') toggleControls();
   }
   let learning = null;
   function learnShow() {

@@ -195,6 +195,7 @@ body.midi-tab .gmap, body.learning .gmap { opacity: .9; }
 .gpad.pulse.lit[data-i="12"] { box-shadow: 0 0 calc(4px + var(--pulse) * 26px) rgba(143,211,197, calc(var(--pulse) * .9)); }
 
 .knobs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px 4px; }
+.knobs > .knob:nth-child(9) { grid-column: 1 / -1; justify-self: center; }
 .knob { position: relative; display: grid; justify-items: center; gap: 1px; padding: 4px 0 6px; border-radius: 10px; cursor: ns-resize; touch-action: none; user-select: none; -webkit-user-select: none; border: 1px solid transparent; }
 .knob svg { width: 52px; height: 52px; }
 .knob .kt, .knob .kv { fill: none; stroke-width: 3.2; stroke-linecap: round; }
@@ -628,7 +629,7 @@ class HarmonicEngine {
 
     // Pulse (brainwave) + sculpt filter state
     this.ctl = { pulseRate: UNMAP.pulseRate(6), pulseDepth: .35, pulseShape: .15, beatLevel: .35,
-      cutoff: 1, resonance: .12, motion: 0, level: .8 };
+      cutoff: 1, resonance: .12, motion: .3, level: .8, textures: .4 };
     this.pulseOn = true;
     this.beatMode = 'isochronic';
     this.lockRoot = true;        // pulse = root / n, an exact subharmonic of the drone
@@ -714,19 +715,41 @@ class HarmonicEngine {
     this.formG = c.createGain(); this.formG.gain.value = 0;
     this.fOut = c.createGain();
     this.master.connect(this.lowCutF);
+    // Low-pass mode: classic full-range filter
     this.lowCutF.connect(this.biq); this.biq.connect(this.biq2); this.biq2.connect(this.biqG); this.biqG.connect(this.fOut);
+    // Other modes: split at ~100 Hz. The sub band always passes at 100%; only the upper band is filtered,
+    // in parallel with its dry signal (filtered part is at most half), so the bass never drops out.
+    this.splitHz = 100;
+    const bq = (type, f, q = .707) => { const n = c.createBiquadFilter(); n.type = type; n.frequency.value = f; n.Q.value = q; return n; };
+    this.xLo = [bq('lowpass', this.splitHz), bq('lowpass', this.splitHz)];
+    this.xHi = [bq('highpass', this.splitHz), bq('highpass', this.splitHz)];
+    this.subG = c.createGain(); this.subG.gain.value = 0;
+    this.upDry = c.createGain(); this.upDry.gain.value = 0;
+    this.upWet = c.createGain(); this.upWet.gain.value = 0;
+    this.biqM = bq('bandpass', 800, 1); this.biqM2 = bq('allpass', 800, .5);
+    this.lowCutF.connect(this.xLo[0]); this.xLo[0].connect(this.xLo[1]); this.xLo[1].connect(this.subG); this.subG.connect(this.fOut);
+    this.lowCutF.connect(this.xHi[0]); this.xHi[0].connect(this.xHi[1]); this.xHi[1].connect(this.upDry); this.upDry.connect(this.fOut);
+    this.xHi[1].connect(this.biqM); this.biqM.connect(this.biqM2); this.biqM2.connect(this.upWet); this.upWet.connect(this.fOut);
+    this.filterWet = .5;
     this.formants = [0, 1, 2].map(i => {
       const f = c.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = VOWELS[2].f[i]; f.Q.value = 8;
       const g = c.createGain(); g.gain.value = FORMANT_GAIN[i] * 2.4;
-      this.lowCutF.connect(f); f.connect(g); g.connect(this.formG); return f;
+      this.xHi[1].connect(f); f.connect(g); g.connect(this.formG); return f;
     });
     this.formG.connect(this.fOut);
+    // Motion: a phaser on the upper register only (above ~500 Hz), layered on top of the drone
+    this.phIn = bq('highpass', 500, .6);
+    this.phAps = [520, 950, 1700, 3000].map(f => bq('allpass', f, .55));
+    this.phG = c.createGain(); this.phG.gain.value = 0;
+    this.lowCutF.connect(this.phIn);
+    this.phAps.reduce((prev, ap) => { prev.connect(ap); return ap; }, this.phIn).connect(this.phG);
+    this.phG.connect(this.fOut);
     this.fOut.connect(this.comp);
-    // filter LFO -> detune (cents) of every filter stage
+    // filter LFO -> detune (cents) of the phaser stages only; the main filter stays where you set it
     this.fLfo = c.createOscillator(); this.fLfo.frequency.value = .05;
     this.fLfoAmt = c.createGain(); this.fLfoAmt.gain.value = 0;
     this.fLfo.connect(this.fLfoAmt);
-    [this.biq, this.biq2, ...this.formants].forEach(f => this.fLfoAmt.connect(f.detune));
+    this.phAps.forEach(f => this.fLfoAmt.connect(f.detune));
     this.fLfo.start();
 
     this.comp.connect(this.limiter);
@@ -926,15 +949,17 @@ class HarmonicEngine {
 
     const e = this.eff();
     const T = .12;
+    if (this.ctl.textures != null && Math.abs(this.ctl.textures * 1.5 - (this.textureMix ?? .6)) > .002) this.setTextureMix(this.ctl.textures * 1.5);
 
     // partial amplitudes
     const tilt = lerp(2.3, .65, e.brightness);
-    const walkSpeed = .05 + e.motion * .6;
+    const drift = clamp((this.ctl.motion ?? .3) * 2);   // Motion knob: 0 = perfectly still drone
+    const walkSpeed = (.05 + e.motion * .6) * drift;
     let sumSq = 0; const amps = [];
     for (let i = 0; i < H_COUNT; i++) {
       const h = i + 1;
       this.walk[i] = clamp(this.walk[i] + (Math.random() - .5) * walkSpeed * dt * 2);
-      const shimmer = lerp(1, .35 + .65 * this.walk[i], clamp(.3 + e.motion));
+      const shimmer = lerp(1, .35 + .65 * this.walk[i], clamp(.3 + e.motion) * drift);
       let amp = Math.pow(h, -tilt) * shimmer;
       if (h % 2 === 0 && h > 1) amp *= (1 - e.hollow * .85);
       if (h === 1) amp *= lerp(.35, 1.4, e.ground);
@@ -952,7 +977,7 @@ class HarmonicEngine {
       if (P.twin) {
         const beatHz = e.beating * (.25 + P.h * .12) * 1.4;
         P.twin.frequency.setTargetAtTime(this.targetRoot * P.h + beatHz, now, this._rootGlide ? this._rootGlide.tc / 1000 : .5);
-        P.twinG.gain.setTargetAtTime(.2 + e.beating * .6, now, .5);
+        P.twinG.gain.setTargetAtTime((.2 + e.beating * .6) * drift, now, .5);
       }
     }
 
@@ -1007,14 +1032,24 @@ class HarmonicEngine {
 
   _tickFilter(now) {
     const C = this.ctl, type = this.filterType, q = MAP.resonance(C.resonance);
-    const formant = type === 'formant';
-    this.biqG.gain.setTargetAtTime(formant ? 0 : (type === 'bandpass' ? 1 + q * .35 : 1), now, .08);
-    this.formG.gain.setTargetAtTime(formant ? 1 : 0, now, .08);
+    const formant = type === 'formant', lp = type === 'lowpass', wet = clamp(this.filterWet ?? .5, 0, .5);
+    this.biqG.gain.setTargetAtTime(lp ? 1 : 0, now, .08);
+    this.subG.gain.setTargetAtTime(lp ? 0 : 1, now, .08);
+    this.upDry.gain.setTargetAtTime(lp ? 0 : 1 - wet, now, .08);
+    this.upWet.gain.setTargetAtTime(lp || formant ? 0 : wet * (type === 'bandpass' ? 1 + q * .35 : 1), now, .08);
+    this.formG.gain.setTargetAtTime(formant ? wet * 1.4 : 0, now, .08);
     if (!formant) {
-      if (this.biq.type !== type) { this.biq.type = type; this.biq2.type = type === 'lowpass' ? 'lowpass' : 'allpass'; }
       const f = MAP.cutoff(C.cutoff);
-      this.biq.frequency.setTargetAtTime(f, now, .05); this.biq2.frequency.setTargetAtTime(Math.min(20000, f * 1.2), now, .05);
-      this.biq.Q.setTargetAtTime(q, now, .05);
+      if (lp) {
+        if (this.biq.type !== 'lowpass') { this.biq.type = 'lowpass'; this.biq2.type = 'lowpass'; }
+        this.biq.frequency.setTargetAtTime(f, now, .05); this.biq2.frequency.setTargetAtTime(Math.min(20000, f * 1.2), now, .05);
+        this.biq.Q.setTargetAtTime(q, now, .05);
+      } else {
+        if (this.biqM.type !== type) { this.biqM.type = type; this.biqM2.type = type === 'highpass' ? 'highpass' : 'allpass'; }
+        const fu = Math.max(this.splitHz * 1.2, f);
+        this.biqM.frequency.setTargetAtTime(fu, now, .05); this.biqM2.frequency.setTargetAtTime(Math.min(20000, fu * 1.1), now, .05);
+        this.biqM.Q.setTargetAtTime(q, now, .05);
+      }
     } else {
       // cutoff knob morphs through the vowels, resonance narrows the formants
       const x = C.cutoff * (VOWELS.length - 1), i = Math.min(VOWELS.length - 2, Math.floor(x)), t = x - i;
@@ -1026,7 +1061,9 @@ class HarmonicEngine {
     this.lowCutF.frequency.setTargetAtTime(this.lowCut, now, .1);
     const lfoHz = this.motionSync ? this.pulseHz() / this.motionDiv : MAP.motionRate(this.motionFree);
     this.fLfo.frequency.setTargetAtTime(lfoHz, now, .3);
-    this.fLfoAmt.gain.setTargetAtTime(MAP.motion(C.motion), now, .1);
+    const m = clamp(C.motion);
+    this.fLfoAmt.gain.setTargetAtTime(m > .005 ? 900 + 1500 * m : 0, now, .2);   // phaser sweep depth (cents)
+    this.phG.gain.setTargetAtTime(.55 * Math.sqrt(m), now, .2);                // phaser amount, 0 = none
   }
   vowelName() { const x = this.ctl.cutoff * (VOWELS.length - 1); return VOWELS[Math.round(x)].v; }
 
@@ -1839,8 +1876,9 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
     { k: 'beatLevel', name: 'Tone', def: .35, fmt: v => E.beatMode === 'off' ? 'off' : Math.round(v * 100) + '%', accent: 'pulse' },
     { k: 'cutoff', name: 'Cutoff', def: 1, fmt: v => E.filterType === 'formant' ? `“${E.vowelName()}”` : fmtHz(MAP.cutoff(v)) },
     { k: 'resonance', name: 'Reso', def: .12, fmt: v => 'Q ' + MAP.resonance(v).toFixed(1) },
-    { k: 'motion', name: 'Motion', def: 0, fmt: v => v < .01 ? 'still' : '±' + (MAP.motion(v) / 1200).toFixed(2) + ' oct' },
+    { k: 'motion', name: 'Motion', def: .3, fmt: v => v < .01 ? 'still' : Math.round(v * 100) + '%' },
     { k: 'level', name: 'Level', def: .8, fmt: v => Math.round(v * 100) },
+    { k: 'textures', name: 'Textures', def: .4, fmt: v => v < .01 ? 'off' : Math.round(v * 150) },
   ];
   const knobEls = [];
   const ARC = 270, R = 19, CIRC = 2 * Math.PI * R, ARCLEN = CIRC * ARC / 360;
@@ -2080,7 +2118,7 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
   const DEFAULT_MAP = () => ({
     // Common pad default: notes 36-51, bottom-left pad first (MPC convention); any channel.
     pads: [48, 49, 50, 51, 44, 45, 46, 47, 40, 41, 42, 43, 36, 37, 38, 39].map(n => `n:*:${n}`),
-    knobs: new Array(8).fill(null),       // unmapped CCs are claimed automatically in the order you turn them
+    knobs: new Array(9).fill(null),       // unmapped CCs are claimed automatically in the order you turn them
   });
   // Only accept well-formed bindings from a link or imported file (never trust them as markup).
   const KEY_RE = /^[nc]:(\*|\d{1,2}):\d{1,3}$/, ENCS = ['auto', 'abs', 'rel2', 'rel64'];
@@ -2125,7 +2163,7 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
 
   // Encoder auto-detect: absolute knobs never repeat the same value while turning; relative encoders do (1,1,1 or 65,65,65).
   const encHist = {};
-  const pick = new Array(8).fill(false), pickPrev = new Array(8).fill(null);
+  const pick = new Array(9).fill(false), pickPrev = new Array(9).fill(null);
   function encKind(key, v, bound) {
     if (settings.enc !== 'auto') return settings.enc;
     if (bound && bound !== 'auto') return bound;
@@ -2196,7 +2234,7 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
       $('wz-title').textContent = `Hit the pad at ${posName(S.idx)}`;
       $('wz-sub').textContent = `Row 1 is the top row. This pad will play “${PADS[S.idx].name}”.`;
     } else {
-      $('wz-title').textContent = `Turn knob ${S.idx + 1} (${S.idx < 4 ? 'top' : 'bottom'} row, ${S.idx % 4 + 1} from left)`;
+      $('wz-title').textContent = S.idx >= 8 ? `Turn a spare knob or fader for ${KNOBS[S.idx].name}, or press Skip` : `Turn knob ${S.idx + 1} (${S.idx < 4 ? 'top' : 'bottom'} row, ${S.idx % 4 + 1} from left)`;
       $('wz-sub').textContent = `Give it a slow turn. This knob will control “${KNOBS[S.idx].name}”.`;
     }
   }
