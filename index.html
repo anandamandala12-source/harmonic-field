@@ -435,6 +435,8 @@ const VOWELS = [
 const FORMANT_GAIN = [1, .55, .3];
 const BEAT_MODES = ['off', 'binaural', 'isochronic'];
 
+const HF_LITE = /[?&]full\b/.test(location.search) ? false : (/[?&]lite\b/.test(location.search) || navigator.maxTouchPoints > 1 || /iPhone|iPad|iPod|Android/i.test(navigator.userAgent));
+window.HF_LITE = HF_LITE;
 class HarmonicEngine {
   constructor() {
     this.ctx = null;
@@ -562,11 +564,11 @@ class HarmonicEngine {
 
     this.comp.connect(this.limiter);
     this.limiter.connect(this.analyser); this.analyser.connect(c.destination);
-    this.limiter.connect(this.recDest);
+    if (this.keepRecTap) this.limiter.connect(this.recDest);
 
     // Reverb (generated long hall IR)
     this.reverb = c.createConvolver();
-    this.reverb.buffer = this._impulse(9, 2.6);
+    this.reverb.buffer = this._impulse(HF_LITE ? 4 : 9, HF_LITE ? 2.2 : 2.6);
     this.reverbSend = c.createGain(); this.reverbSend.gain.value = 1;
     this.reverbOut = c.createGain(); this.reverbOut.gain.value = .5;
     this.reverbSend.connect(this.reverb); this.reverb.connect(this.reverbOut); this.reverbOut.connect(this.master);
@@ -1062,7 +1064,7 @@ class FieldVisual {
     this.ri = (this.ri + 1) % this.ripples.length;
   }
   resize() {
-    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const dpr = Math.min(window.devicePixelRatio || 1, HF_LITE ? 1 : 1.5);
     const w = Math.floor(this.canvas.clientWidth * dpr), h = Math.floor(this.canvas.clientHeight * dpr);
     if (this.canvas.width !== w || this.canvas.height !== h) { this.canvas.width = w; this.canvas.height = h; }
   }
@@ -1568,6 +1570,28 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
   const keep = new Audio('data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=');
   keep.loop = true; keep.setAttribute('playsinline', '');
 
+  /* self-healing: if iOS interrupts audio (route change, Bluetooth, call, Siri), try to bring it back */
+  let healT = 0;
+  const heal = () => {
+    if (!E.ctx || paused || sleep.slept || E.ctx.state === 'running') return;
+    E.resume().then(() => { if (E.ctx.state === 'running') { keep.play().catch(() => {}); E.setVolume(E.volume); } else toast('Tap anywhere to bring the sound back'); });
+  };
+  E.onState = st => { clearTimeout(healT); if (st !== 'running') healT = setTimeout(heal, 400); };
+  setInterval(heal, 3000);
+
+  /* if the browser reloads the page (iPad memory pressure), offer a one-tap resume of the same mood */
+  const SKEY = 'hf-simple-state';
+  const saveState = () => { try { if (E.ctx) sessionStorage.setItem(SKEY, JSON.stringify({ t: Date.now(), playing: !paused && !sleep.slept, current, level: E.ctl.level, tone, journey: !!journey })); } catch {} };
+  let restore = null;
+  try { const r = JSON.parse(sessionStorage.getItem(SKEY) || 'null'); if (r && r.playing && Date.now() - r.t < 3 * 3600e3) restore = r; } catch {}
+  if (restore) {
+    const gp = document.querySelector('#gate .gate-inner > p'); if (gp) gp.textContent = 'The sound stopped unexpectedly. Tap Resume to pick up where you left off: ' + PRESETS[restore.current].name + '.';
+    $('begin').textContent = 'Resume';
+  }
+  setInterval(saveState, 2000);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) saveState(); });
+  window.addEventListener('pagehide', saveState);
+
   sleep.onDone = () => { $('sleep-ov').hidden = false; if (journey) toggleJourney(); render(); };
   async function wakeSleep() { await sleep.wake(); $('sleep-ov').hidden = true; applyPreset(current); }
   $('sleep-ov').onclick = wakeSleep;
@@ -1578,14 +1602,16 @@ window.LAYER_DEFS = LAYER_DEFS; window.LayerRack = LayerRack; window.SleepTimer 
     try { await E.start(); } catch (err) { starting = false; $('hf-err').hidden = false; $('hf-err').textContent = 'Audio could not start: ' + err.message; return; }
     keep.play().catch(() => {});
     E.setVolume(E.ctl.level);
-    applyPreset(0, 4);
+    if (restore) { applyPreset(restore.current, 4); setVol(restore.level); setTone(restore.tone); if (restore.journey && !journey) toggleJourney(); restore = null; }
+    else applyPreset(0, 4);
     $('gate').classList.add('gone'); setTimeout(() => $('gate').remove(), 1500);
     $('dock').hidden = false; keepAwake(); wake();
   }
   $('begin').onclick = begin;
 
   render();
-  function frame() { V.frame(); requestAnimationFrame(frame); }
+  let lastF = 0; const minDt = HF_LITE ? 1000 / 30 : 1000 / 60;
+  function frame(t) { requestAnimationFrame(frame); if (document.hidden || t - lastF < minDt - 2) return; lastF = t; V.frame(); }
   requestAnimationFrame(frame);
   setInterval(() => { if (E.ctx) render(); }, 1000);
 })();

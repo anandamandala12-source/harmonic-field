@@ -602,6 +602,8 @@ const VOWELS = [
 const FORMANT_GAIN = [1, .55, .3];
 const BEAT_MODES = ['off', 'binaural', 'isochronic'];
 
+const HF_LITE = /[?&]full\b/.test(location.search) ? false : (/[?&]lite\b/.test(location.search) || navigator.maxTouchPoints > 1 || /iPhone|iPad|iPod|Android/i.test(navigator.userAgent));
+window.HF_LITE = HF_LITE;
 class HarmonicEngine {
   constructor() {
     this.ctx = null;
@@ -733,7 +735,7 @@ class HarmonicEngine {
 
     // Reverb (generated long hall IR)
     this.reverb = c.createConvolver();
-    this.reverb.buffer = this._impulse(9, 2.6);
+    this.reverb.buffer = this._impulse(HF_LITE ? 4 : 9, HF_LITE ? 2.2 : 2.6);
     this.reverbSend = c.createGain(); this.reverbSend.gain.value = 1;
     this.reverbOut = c.createGain(); this.reverbOut.gain.value = .5;
     this.reverbSend.connect(this.reverb); this.reverb.connect(this.reverbOut); this.reverbOut.connect(this.master);
@@ -1229,7 +1231,7 @@ class FieldVisual {
     this.ri = (this.ri + 1) % this.ripples.length;
   }
   resize() {
-    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const dpr = Math.min(window.devicePixelRatio || 1, HF_LITE ? 1 : 1.5);
     const w = Math.floor(this.canvas.clientWidth * dpr), h = Math.floor(this.canvas.clientHeight * dpr);
     if (this.canvas.width !== w || this.canvas.height !== h) { this.canvas.width = w; this.canvas.height = h; }
   }
